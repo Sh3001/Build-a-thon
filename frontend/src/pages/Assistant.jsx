@@ -2,14 +2,14 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../services/api";
 
 const SUGGESTIONS = [
-  "Average amount of a recovered case",
-  "How many cases over 5000 dollars?",
-  "Which customers had the most failures?",
+  "What is the recovery rate?",
+  "Which failure cause loses the most money?",
   "Total recovered by failure category",
+  "How many cases over 5000 dollars?",
+  "Average amount of a recovered case",
   "Top 3 cases over 3000 dollars",
   "Did it beat the baseline?",
   "What did the policy engine block?",
-  "Show me the dead letter queue",
 ];
 
 /** Minimal inline markdown: **bold** and `code`. Deliberately not a library - the text
@@ -97,10 +97,11 @@ export function Assistant({ onOpenCase }) {
     <div className="card">
       <h2>Ask about this run</h2>
       <div className="sub">
-        Questions are compiled into a query over the case table - filters, aggregates and
-        groupings - and executed as SQL. Every figure comes from the database; nothing is
-        generated. If part of a question cannot be expressed against the stored data, the
-        answer says so rather than quietly answering a broader question.
+        Ask in plain English about amounts, failure causes, outcomes, retries or
+        customers. The question is compiled into SQL over the case table and every figure
+        is read from the database, never generated. If part of a question cannot be
+        expressed against the stored data, the answer says so rather than quietly
+        answering a broader one.
       </div>
 
       <div className="chat-log">

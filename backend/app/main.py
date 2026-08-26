@@ -304,9 +304,13 @@ def chat(req: ChatRequest) -> JSONResponse:
     problems = q.validate_against_schema()
     if problems:
         a.close()
-        return JSONResponse({"text": "I could not run that: " + "; ".join(problems),
-                             "intent": "invalid", "query": q.model_dump(mode="json"),
-                             "data": {}, "case_ids": [], "source": "parser"})
+        return JSONResponse({
+            "text": ("I understood the question but could not run it against the case "
+                     "table: " + "; ".join(problems)
+                     + ". Try naming a stored field - amount, amount recovered, retries, "
+                       "failure cause, failure category, outcome or customer."),
+            "intent": "invalid", "query": q.model_dump(mode="json"),
+            "data": {}, "case_ids": [], "source": "parser"})
 
     result = run_query(a.conn, q)
     text = render.render(q, result) + render.caveat(q)
@@ -316,7 +320,8 @@ def chat(req: ChatRequest) -> JSONResponse:
         "text": text, "intent": f"{q.agg.value}"
                                 + (f"({q.field})" if q.field else ""),
         "query": q.model_dump(mode="json", exclude_defaults=True),
-        "data": {"scalar": result.scalar, "matched": result.total_matched},
+        "data": {"scalar": result.scalar, "matched": result.total_matched,
+                 "grand_total": result.grand_total},
         "sql": result.sql, "case_ids": ids,
         "unresolved": q.unresolved, "source": "query-language",
     })
