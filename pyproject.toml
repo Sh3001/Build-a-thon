@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recoverai"
+version = "0.1.0"
+description = "Autonomous AI revenue recovery agent"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["backend*", "simulation*", "scripts*", "ml*"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

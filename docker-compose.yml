@@ -1,0 +1,53 @@
+services:
+  recoverai:
+    build: .
+    container_name: recoverai
+    ports:
+      - "8000:8000"
+    environment:
+      # Guardrails are configuration, not code -- override them here to see the
+      # policy engine change behaviour without touching a rule.
+      RECOVERAI_SEED: "20260822"
+      RECOVERAI_MAX_RETRIES: "3"
+      RECOVERAI_MIN_RETRY_HOURS: "24"
+      RECOVERAI_MAX_AUTO_AMOUNT: "5000"
+      RECOVERAI_MAX_CONTACTS: "4"
+      # Optional: set to enable the Claude planner. Without it the agent runs
+      # entirely offline on the deterministic planner.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Unset -> SQLite, no server needed. Set it to use the postgres service below:
+      #   docker compose --profile postgres up --build
+      RECOVERAI_DB_URL: "${RECOVERAI_DB_URL:-}"
+    volumes:
+      - recoverai-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  # Opt-in: `docker compose --profile postgres up --build`. Without the profile the
+  # stack runs on SQLite exactly as before and this container is never started.
+  postgres:
+    image: postgres:16-alpine
+    container_name: recoverai-postgres
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: recoverai
+      POSTGRES_PASSWORD: recoverai
+      POSTGRES_DB: recoverai
+    ports:
+      - "5432:5432"
+    volumes:
+      - recoverai-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recoverai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  recoverai-data:
+  recoverai-pgdata:

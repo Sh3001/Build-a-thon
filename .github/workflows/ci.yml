@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The offline suite is the gate: no database server, no API key, no network. If this
+  # job needs a service to pass, the project has lost a property worth keeping.
+  tests-sqlite:
+    name: tests (sqlite, offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt && pip install -e .
+      - run: python -m pytest backend/tests/ -q
+
+  tests-postgres:
+    name: tests (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: recoverai
+          POSTGRES_PASSWORD: recoverai
+          POSTGRES_DB: recoverai_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U recoverai"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt && pip install -e .
+      - name: Full suite including the Postgres round-trip
+        env:
+          RECOVERAI_TEST_DB_URL: postgresql://recoverai:recoverai@localhost:5432/recoverai_test
+        run: python -m pytest backend/tests/ -q
+
+  # The pipeline is what produces every number in the README. If it cannot run end to
+  # end, the claims are unverifiable -- so it runs on a reduced case count for speed.
+  pipeline:
+    name: pipeline smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt && pip install -e .
+      - run: |
+          python scripts/generate_dataset.py
+          python ml/train.py
+          python ml/evaluate.py
+          python scripts/run_experiment.py --fresh --limit 150
+      - name: Audit chain must verify after a full run
+        run: |
+          python -c "
+          from backend.app.audit.store import AuditStore
+          a = AuditStore()
+          ok, bad = a.verify()
+          rows = a.count()
+          a.close()
+          assert ok, f'audit chain broken at seq {bad}'
+          print(f'chain verified over {rows} rows')
+          "
+
+  frontend:
+    name: frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend

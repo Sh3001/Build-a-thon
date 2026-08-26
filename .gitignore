@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+frontend/dist/
+data/raw/*.csv
+data/processed/*.csv
+data/runs/
+ml/model/*.json
+ml/model/*.joblib
+*.egg-info/
+.pytest_cache/
+.DS_Store
