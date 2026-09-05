@@ -13,24 +13,56 @@ horizon -- so it terminates even if a planner misbehaves.
 """
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
 from backend.app.agents.diagnose import diagnose as rules_diagnose
 from backend.app.agents.strategy import select_intervention as rules_select
 from backend.app.config import MAX_AGENT_STEPS, RECOVERY_HORIZON_DAYS
+from backend.app.domain.events import Event, EventType
+from backend.app.domain.states import IllegalTransition, transition
 from backend.app.ml.scorer import RecoveryScorer, get_scorer
 from backend.app.models.enums import (
-    CONTACT_ACTIONS, ActionOutcome, CaseStatus, FailureCategory, InterventionType,
-    PolicyDecision, category_of,
+    CONTACT_ACTIONS,
+    ActionOutcome,
+    CaseStatus,
+    InterventionType,
+    PolicyDecision,
 )
 from backend.app.models.schemas import (
-    ActionResult, AgentState, AuditEvent, Diagnosis, PolicyResult, ProposedAction, Transaction,
+    ActionResult,
+    AgentState,
+    AuditEvent,
+    Diagnosis,
+    ProposedAction,
+    Transaction,
 )
 from backend.app.policies.engine import PolicyContext, validate
+from backend.app.policies.version import POLICY_VERSION
 from backend.app.tools.executor import ActionExecutor
+
+
+def _input_hash(state: AgentState) -> str:
+    """A fingerprint of the decision inputs.
+
+    Recorded instead of the inputs themselves: an audit log that contains customer data
+    becomes a second copy of the customer database, with the same disclosure risk and
+    none of the access controls. A hash lets a reviewer prove a stored decision was taken
+    on a given case state without the log holding that state.
+    """
+    import hashlib
+    blob = "|".join(str(x) for x in (
+        state.transaction_id, state.failure_code.value, round(state.amount_usd, 2),
+        round(state.recovery_probability, 6), state.attempt_count, state.contact_count,
+        state.step_count, round(state.elapsed_hours, 3),
+        state.diagnosis.root_cause.value if state.diagnosis else "",
+        round(state.diagnosis.confidence, 4) if state.diagnosis else "",
+    ))
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 def _txn_dict(state: AgentState) -> dict:
@@ -53,6 +85,26 @@ class RecoveryAgent:
     #: return None to fall back to the deterministic path.
     planner: Any = None
     on_audit: Callable[[AuditEvent], None] | None = None
+    #: Optional `ReviewStore`. When attached, a HUMAN_REVIEW verdict opens a task an
+    #: operator can act on. When absent the verdict still blocks execution -- review is
+    #: how a withheld case gets *unblocked*, never how it gets blocked.
+    reviews: Any = None
+    #: Customers who have withdrawn consent. A plain set so a batch run resolves it once
+    #: rather than hitting the database per case.
+    opted_out: frozenset[str] = field(default_factory=frozenset)
+    #: Optional event bus. Publishing is best-effort and never affects the decision.
+    bus: Any = None
+    #: Optional `ProfitOptimizer`. When attached it acts as an *arbiter*, not a planner:
+    #: the deterministic strategy still chooses what and when (it knows the sequencing --
+    #: repair before retry, wait for payday -- that a static argmax does not), and the
+    #: optimiser vetoes a proposal whose expected incremental profit is negative,
+    #: substituting a better-scoring feasible action or STOP.
+    #:
+    #: None preserves the original behaviour exactly, which is what keeps the two
+    #: comparable as experiment arms rather than as one replacing the other.
+    optimizer: Any = None
+    tenant_id: str = "default"
+    run_id: str = ""
     _graph: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -68,11 +120,31 @@ class RecoveryAgent:
             risk_score=round(state.risk_score, 6),
             recovery_probability=round(state.recovery_probability, 6),
             expected_recovery=round(state.expected_recovery, 2),
-            attempt_count=state.attempt_count, **kw,
+            attempt_count=state.attempt_count,
+            # Provenance, so a stored decision can be re-derived rather than merely read.
+            tenant_id=self.tenant_id,
+            model_version=getattr(self.scorer, "model_version", None),
+            policy_version=POLICY_VERSION,
+            agent_run_id=self.run_id or None,
+            input_hash=_input_hash(state),
+            **kw,
         )
         if self.on_audit:
             self.on_audit(ev)
         return ev
+
+    def _publish(self, kind: EventType, state: AgentState, payload: dict | None = None) -> None:
+        """Best-effort notification. A bus failure must never change a recovery decision,
+        so this swallows -- the bus itself records the dead letter."""
+        if self.bus is None:
+            return
+        with contextlib.suppress(Exception):
+            self.bus.publish(Event(
+                type=kind, tenant_id=self.tenant_id,
+                transaction_id=state.transaction_id, customer_id=state.customer_id,
+                payload=payload or {},
+                dedupe_key=f"{self.run_id}:{state.transaction_id}:{kind.value}:"
+                           f"{state.step_count}"))
 
     # ------------------------------------------------------------------ nodes
     def load_transaction(self, state: AgentState) -> dict:
@@ -134,11 +206,51 @@ class RecoveryAgent:
             action = self.planner.select(state, dx)            # may return None
         if action is None:
             action = rules_select(state, dx)
+        note = ""
+        if self.optimizer is not None:
+            action, note = self._arbitrate(state, dx, action)
         ev = self._emit(state, "select_intervention",
-                        f"proposed {action.action.value} (via {action.source}): {action.reason}",
+                        f"proposed {action.action.value} (via {action.source}): "
+                        f"{action.reason}{note}",
                         action=action.action.value, next_step="validate_policy")
         return {"proposed_action": action, "step_count": state.step_count + 1,
                 "audit_events": [*state.audit_events, ev]}
+
+    def _arbitrate(self, state: AgentState, dx, action: ProposedAction) -> tuple[ProposedAction, str]:
+        """Price the proposal, and refuse to spend money that does not pay for itself.
+
+        Control flow is passed through untouched: WAIT and STOP cost nothing and
+        `escalate_case` is a decision about who owns the case, not a purchase.
+        """
+        if action.action in (InterventionType.WAIT, InterventionType.STOP,
+                             InterventionType.ESCALATE_CASE):
+            return action, ""
+        try:
+            scored = {c.action: c for c in self.optimizer.candidates(state, dx)}
+        except Exception as exc:
+            # A broken optimiser must not block recovery: fall back to the planner's
+            # choice, which the policy engine will still validate.
+            return action, f" [optimiser unavailable: {type(exc).__name__}]"
+
+        chosen = scored.get(action.action)
+        if chosen is not None and chosen.feasible and chosen.expected_profit.is_positive:
+            return action.model_copy(
+                update={"expected_profit_usd": chosen.profit_usd}), ""
+
+        best = self.optimizer.best(state, dx)
+        if best is None:
+            return ProposedAction(
+                action=InterventionType.STOP, source=action.source,
+                reason=("no candidate action has positive expected incremental profit "
+                        "on this case; the cheapest correct move is to leave it alone"),
+                expected_profit_usd=0.0), " [optimiser: nothing pays for itself]"
+
+        why = (f"{action.action.value} priced at "
+               f"{chosen.expected_profit if chosen else 'infeasible'}")
+        return ProposedAction(
+            action=best.action, channel=action.channel, delay_hours=action.delay_hours,
+            source=action.source, reason=best.explain(),
+            expected_profit_usd=best.profit_usd), f" [optimiser overrode: {why}]"
 
     def validate_policy(self, state: AgentState) -> dict:
         assert state.proposed_action is not None
@@ -148,6 +260,7 @@ class RecoveryAgent:
             c for c in {channel}
             if dlq is not None and dlq.is_quarantined(state.customer_id, c)
         )
+        dx = state.diagnosis
         ctx = PolicyContext(
             hours_since_last_attempt=state.hours_since_last_attempt,
             instrument_fixed=state.instrument_fixed,
@@ -155,6 +268,14 @@ class RecoveryAgent:
             already_executed=frozenset(state.actions_taken),
             quarantined_channels=quarantined,
             contact_channel=channel,
+            # A confident action on an unconfident diagnosis is the failure mode the
+            # review tier exists for, so the confidence has to reach the gate.
+            diagnosis_confidence=dx.confidence if dx is not None else 1.0,
+            diagnosis_unknown=bool(dx is not None and dx.source == "unknown"),
+            customer_opted_out=state.customer_id in self.opted_out,
+            consecutive_execution_failures=state.consecutive_execution_failures,
+            support_requested=state.support_requested,
+            tenant_id=self.tenant_id,
         )
         result = validate(state, state.proposed_action, ctx)
         ev = self._emit(state, "validate_policy", result.reason,
@@ -163,10 +284,33 @@ class RecoveryAgent:
                         action=state.proposed_action.action.value,
                         next_step="execute_action" if result.allowed else "monitor_outcome")
         upd: dict = {"policy_result": result, "audit_events": [*state.audit_events, ev]}
+
+        if result.needs_review:
+            # A withheld case is not a dropped case. The task is what makes the
+            # difference visible: without it the only trace of a $50k recovery the system
+            # declined to automate would be one line in an audit log nobody reads.
+            review_id = None
+            if self.reviews is not None:
+                review_id = self.reviews.open_task(
+                    state.transaction_id, result, customer_id=state.customer_id,
+                    run_id=self.run_id or None, amount_usd=state.amount_usd,
+                    expected_profit=state.proposed_action.expected_profit_usd,
+                    model_version=str(getattr(self.scorer, "model_version", "")),
+                    policy_version=str(POLICY_VERSION))
+            upd["review_ids"] = [*state.review_ids, review_id] if review_id else state.review_ids
+            upd["pending_review"] = True
+            self._publish(EventType.HUMAN_REVIEW_REQUESTED, state,
+                          {"review_id": review_id, "rule": result.rules_fired[-1:],
+                           "reason": result.reason, "amount_usd": state.amount_usd})
+
         if not result.allowed:
             # Record the block so the planner advances instead of re-proposing it.
             upd["blocked_actions"] = [*state.blocked_actions,
                                       state.proposed_action.action.value]
+            if result.decision is PolicyDecision.REJECT:
+                self._publish(EventType.POLICY_DENIED, state,
+                              {"rule": result.rules_fired[-1:], "reason": result.reason,
+                               "action": state.proposed_action.action.value})
         return upd
 
     def execute_action(self, state: AgentState) -> dict:
@@ -219,6 +363,39 @@ class RecoveryAgent:
                 upd["contact_count"] = state.contact_count + 1
             upd["hours_since_last_attempt"] = state.hours_since_last_attempt + action.delay_hours
 
+        # A run of failures to *execute* is a signal that the world disagrees with the
+        # plan. Counted here, read by `R-REVIEW-REPEATED-FAILURE`.
+        #
+        # `execution_failed`, not `outcome is FAILURE`. A declined retry is not an
+        # execution failure -- the action ran exactly as intended and the issuer said no,
+        # which is the single most common thing that happens in this system. Counting
+        # declines here would route every case with three ordinary declines to a human and
+        # bury the genuine infrastructure failures in the noise. A success resets the
+        # counter: this is for persistent trouble, not for one bounce during an outage.
+        upd["consecutive_execution_failures"] = (
+            state.consecutive_execution_failures + 1 if result.execution_failed else 0)
+        if result.outcome is ActionOutcome.FAILURE:
+            self._publish(EventType.PAYMENT_RETRY_FAILED
+                          if action.action is InterventionType.RETRY_PAYMENT
+                          else EventType.DELIVERY_BOUNCED, state,
+                          {"action": action.action.value, "detail": result.detail})
+        elif action.action in CONTACT_ACTIONS:
+            self._publish(EventType.CUSTOMER_CONTACTED, state,
+                          {"action": action.action.value,
+                           "channel": action.channel.value if action.channel else ""})
+
+        if action.action is InterventionType.ESCALATE_CASE and self.reviews is not None:
+            # An escalation with no task attached is a case the agent believes a human
+            # owns and no human has been told about.
+            rid = self.reviews.open_escalation(
+                state.transaction_id, action, action.reason or "agent escalation",
+                customer_id=state.customer_id, run_id=self.run_id or None,
+                amount_usd=state.amount_usd)
+            upd["review_ids"] = [*state.review_ids, rid]
+            self._publish(EventType.HUMAN_REVIEW_REQUESTED, state,
+                          {"review_id": rid, "rule": ["ESCALATE_CASE"],
+                           "reason": action.reason, "amount_usd": state.amount_usd})
+
         ev = self._emit(state, "execute_action", result.detail,
                         action=action.action.value, action_result=result.outcome.value,
                         amount_recovered=result.amount_recovered, cost=result.cost,
@@ -229,35 +406,64 @@ class RecoveryAgent:
         return upd
 
     def monitor_outcome(self, state: AgentState) -> dict:
-        """Decide whether the case is finished, and why. The only place a case closes."""
+        """Decide whether the case is finished, and why. The only place a case closes.
+
+        Every status assignment goes through `domain.states.transition`, which refuses a
+        move the lifecycle does not permit. That turns "a closed case never reopens" from
+        a property of how carefully this function is written into one the type system
+        checks -- which matters now that an operator can also close a case from outside
+        the graph.
+        """
         res = state.action_result
         policy = state.policy_result
         upd: dict = {}
+        target: CaseStatus | None = None
+        reason = ""
 
         if res is not None and res.amount_recovered > 0:
-            upd.update(status=CaseStatus.RECOVERED, outcome="recovered",
-                       amount_recovered=round(state.amount_recovered + res.amount_recovered, 2),
-                       stop_reason=("self-cured before our action landed"
-                                    if state.recovered_passively else "payment succeeded"))
+            target, reason = CaseStatus.RECOVERED, (
+                "self-cured before our action landed" if state.recovered_passively
+                else "payment succeeded")
+            upd.update(outcome="recovered",
+                       amount_recovered=round(state.amount_recovered + res.amount_recovered, 2))
         elif res is not None and res.action is InterventionType.ESCALATE_CASE:
-            upd.update(status=CaseStatus.ESCALATED, outcome="escalated",
-                       stop_reason="handed to human review")
+            target, reason = CaseStatus.ESCALATED, "handed to human review"
+            upd["outcome"] = "escalated"
+        elif policy is not None and policy.needs_review:
+            # Withheld pending a person. ESCALATED is the existing terminal state for
+            # "a human now owns this", and reusing it keeps every downstream consumer --
+            # the dashboard, the metrics, the case store -- working unchanged.
+            target = CaseStatus.ESCALATED
+            reason = f"withheld for human approval: {policy.reason}"
+            upd["outcome"] = "human_review"
         elif state.proposed_action is not None \
                 and state.proposed_action.action is InterventionType.STOP:
-            upd.update(status=CaseStatus.STOPPED, outcome="stopped",
-                       stop_reason=state.proposed_action.reason or "no further action worthwhile")
+            target = CaseStatus.STOPPED
+            reason = state.proposed_action.reason or "no further action worthwhile"
+            upd["outcome"] = "stopped"
         elif policy is not None and not policy.allowed:
             # A block is not automatically the end -- the planner gets one more chance to
             # find a different route, bounded by the step cap.
             if state.step_count >= MAX_AGENT_STEPS:
-                upd.update(status=CaseStatus.EXHAUSTED, outcome="exhausted",
-                           stop_reason="agent step ceiling reached")
+                target, reason = CaseStatus.EXHAUSTED, "agent step ceiling reached"
+                upd["outcome"] = "exhausted"
         elif state.elapsed_hours > RECOVERY_HORIZON_DAYS * 24:
-            upd.update(status=CaseStatus.EXHAUSTED, outcome="exhausted",
-                       stop_reason=f"{RECOVERY_HORIZON_DAYS}-day horizon reached")
+            target = CaseStatus.EXHAUSTED
+            reason = f"{RECOVERY_HORIZON_DAYS}-day horizon reached"
+            upd["outcome"] = "exhausted"
         elif state.step_count >= MAX_AGENT_STEPS:
-            upd.update(status=CaseStatus.EXHAUSTED, outcome="exhausted",
-                       stop_reason="agent step ceiling reached")
+            target, reason = CaseStatus.EXHAUSTED, "agent step ceiling reached"
+            upd["outcome"] = "exhausted"
+
+        if target is not None:
+            try:
+                upd["status"] = transition(state.status, target, reason)
+                upd["stop_reason"] = reason
+            except IllegalTransition as exc:
+                # Reaching here means a second writer closed the case while the graph was
+                # working it. Refusing the move is right; recording it is what makes the
+                # race visible instead of a silent overwrite.
+                upd["stop_reason"] = f"{state.stop_reason} (refused: {exc})".strip()
 
         # The clock is advanced solely by each action's `delay_hours` in execute_action.
         # Adding time here as well would double-count it and silently decay every case.
@@ -269,6 +475,12 @@ class RecoveryAgent:
                         amount_recovered=res.amount_recovered if res else 0.0,
                         next_step="END" if tmp.is_terminal else "select_intervention")
         upd["audit_events"] = [*state.audit_events, ev]
+        if tmp.is_terminal:
+            self._publish(
+                EventType.PAYMENT_RECOVERED if tmp.status is CaseStatus.RECOVERED
+                else EventType.CASE_CLOSED,
+                tmp, {"status": tmp.status.value, "reason": upd.get("stop_reason", ""),
+                      "amount_recovered": tmp.amount_recovered})
         return upd
 
     # ------------------------------------------------------------------ routing

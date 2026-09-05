@@ -9,7 +9,31 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # CI is the `testing` profile: no network, no API key, no LLM. A suite that can call
+  # out is a suite whose results depend on someone else's uptime.
+  RECOVERAI_PROFILE: testing
+
 jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt && pip install -e . && pip install ruff mypy
+      - name: ruff
+        run: ruff check backend simulation scripts ml
+      - name: mypy (safety-critical modules, strict)
+        # The policy engine, the domain primitives, the security layer and the decision
+        # layer are held to a higher bar than the rest: a wrong type in any of them is a
+        # wrong decision about money. The ML layer passes DataFrames through interfaces
+        # that gain nothing from full annotation, so it is checked permissively.
+        run: mypy backend/app/policies backend/app/domain backend/app/security backend/app/decision
+
   # The offline suite is the gate: no database server, no API key, no network. If this
   # job needs a service to pass, the project has lost a property worth keeping.
   tests-sqlite:
@@ -50,6 +74,32 @@ jobs:
           RECOVERAI_TEST_DB_URL: postgresql://recoverai:recoverai@localhost:5432/recoverai_test
         run: python -m pytest backend/tests/ -q
 
+  security:
+    name: security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt && pip install -e . && pip install pip-audit
+      - name: Security-specific tests
+        # Called out as their own step so a failure here reads as "a security property
+        # regressed", not as one red dot among four hundred.
+        run: python -m pytest backend/tests/test_security.py backend/tests/test_api_security.py backend/tests/test_tenancy.py -q
+      - name: Known vulnerabilities in dependencies
+        # Advisory: a new CVE in a transitive dependency should be visible without
+        # blocking an unrelated pull request on someone else's disclosure timeline.
+        run: pip-audit --strict || echo "::warning::pip-audit reported findings"
+      - name: No secrets committed
+        run: |
+          if git grep -nE '(sk_live_|rzp_live_|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- \
+              ':!*.lock' ':!.github/workflows/ci.yml'; then
+            echo "::error::a live credential or private key is committed"
+            exit 1
+          fi
+
   # The pipeline is what produces every number in the README. If it cannot run end to
   # end, the claims are unverifiable -- so it runs on a reduced case count for speed.
   pipeline:
@@ -67,17 +117,12 @@ jobs:
           python ml/train.py
           python ml/evaluate.py
           python scripts/run_experiment.py --fresh --limit 150
+      - name: Multi-seed harness must run end to end
+        # Three seeds is not enough to conclude anything, and it is enough to prove the
+        # harness works. The published figures come from a full run.
+        run: python scripts/run_multiseed.py --seeds 3 --limit 120
       - name: Audit chain must verify after a full run
-        run: |
-          python -c "
-          from backend.app.audit.store import AuditStore
-          a = AuditStore()
-          ok, bad = a.verify()
-          rows = a.count()
-          a.close()
-          assert ok, f'audit chain broken at seq {bad}'
-          print(f'chain verified over {rows} rows')
-          "
+        run: python scripts/verify_audit.py
 
   frontend:
     name: frontend build
@@ -93,3 +138,22 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t recoverai:ci .
+      - name: The container must come up on the mock rails with no configuration
+        run: |
+          docker run -d --name recoverai-ci -p 8000:8000 recoverai:ci
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
+              echo "healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          docker logs recoverai-ci
+          exit 1

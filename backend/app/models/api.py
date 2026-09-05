@@ -17,6 +17,12 @@ class Health(BaseModel):
     llm_enabled: bool
     #: Which storage engine this process is actually talking to: "sqlite" or "postgres".
     db_engine: str = "sqlite"
+    #: Security posture, surfaced so "is authentication on?" is answerable without
+    #: reading the deployment's environment.
+    profile: str = "development"
+    auth_required: bool = False
+    policy_version: str = ""
+
 
 
 class OverviewCards(BaseModel):

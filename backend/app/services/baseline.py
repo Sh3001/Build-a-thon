@@ -15,7 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.app.config import ACTION_COST_USD, MAX_RETRIES, MIN_RETRY_INTERVAL_HOURS, RECOVERY_HORIZON_DAYS
+from backend.app.config import (
+    ACTION_COST_USD,
+    MAX_RETRIES,
+    MIN_RETRY_INTERVAL_HOURS,
+    RECOVERY_HORIZON_DAYS,
+)
 from backend.app.models.enums import FailureCategory, FailureCode, category_of
 from backend.app.services.results import CaseOutcome, summarize
 from simulation.payment_gateway import PaymentGateway

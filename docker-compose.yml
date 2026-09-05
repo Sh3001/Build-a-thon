@@ -12,6 +12,19 @@ services:
       RECOVERAI_MIN_RETRY_HOURS: "24"
       RECOVERAI_MAX_AUTO_AMOUNT: "5000"
       RECOVERAI_MAX_CONTACTS: "4"
+      # Below this diagnosis confidence, nothing runs automatically -- the case goes to
+      # the human-review queue instead.
+      RECOVERAI_REVIEW_MIN_CONFIDENCE: "0.55"
+      RECOVERAI_REVIEW_SLA_HOURS: "72"
+      # development: mock rails, anonymous reads, no secrets needed. Set this to
+      # `production` and the process refuses to start until the secrets below are set --
+      # which is the point. See backend/app/profiles.py and docs/production.md.
+      RECOVERAI_PROFILE: "${RECOVERAI_PROFILE:-development}"
+      # Required in the production/staging profiles; unused in development.
+      RECOVERAI_JWT_SECRET: "${RECOVERAI_JWT_SECRET:-}"
+      RECOVERAI_WEBHOOK_SECRET: "${RECOVERAI_WEBHOOK_SECRET:-}"
+      # keyid:secret:tenant:role1|role2, comma separated. Only the PBKDF2 hash is kept.
+      RECOVERAI_API_KEYS: "${RECOVERAI_API_KEYS:-}"
       # Optional: set to enable the Claude planner. Without it the agent runs
       # entirely offline on the deterministic planner.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

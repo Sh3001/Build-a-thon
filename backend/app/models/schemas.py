@@ -2,20 +2,28 @@
 pipeline and the API surface."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from backend.app.config import to_usd
 from backend.app.models.enums import (
-    ActionOutcome, CaseStatus, Channel, CustomerSegment, FailureCategory, FailureCode,
-    InterventionType, PaymentMethod, PolicyDecision, category_of,
+    ActionOutcome,
+    CaseStatus,
+    Channel,
+    CustomerSegment,
+    FailureCategory,
+    FailureCode,
+    InterventionType,
+    PaymentMethod,
+    PolicyDecision,
+    category_of,
 )
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Transaction(BaseModel):
@@ -91,6 +99,12 @@ class ProposedAction(BaseModel):
     message: str | None = None
     reason: str = ""
     source: Literal["rules", "llm"] = "rules"
+    #: The planner's own confidence, when it has one. Advisory: the policy engine reads
+    #: it, but nothing about the safety envelope is delegated to a self-report.
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    #: Expected incremental profit in USD, when an optimiser produced this candidate.
+    #: Present so an audit row records *why* this action beat the alternatives.
+    expected_profit_usd: float | None = None
 
 
 class PolicyResult(BaseModel):
@@ -102,7 +116,15 @@ class PolicyResult(BaseModel):
 
     @property
     def allowed(self) -> bool:
-        return self.decision in (PolicyDecision.APPROVE, PolicyDecision.MODIFY)
+        """True only for verdicts that permit execution *right now*. HUMAN_REVIEW carries
+        an action so an operator can see it, but is not allowed -- reading `allowed` as
+        "is effective_action populated" is exactly the bug this property prevents."""
+        from backend.app.models.enums import EXECUTABLE_DECISIONS
+        return self.decision in EXECUTABLE_DECISIONS
+
+    @property
+    def needs_review(self) -> bool:
+        return self.decision is PolicyDecision.HUMAN_REVIEW
 
 
 class ActionResult(BaseModel):
@@ -114,6 +136,12 @@ class ActionResult(BaseModel):
     detail: str = ""
     idempotency_key: str = ""
     replayed: bool = Field(default=False, description="True if a cached result was returned")
+    #: True only when the action could not be *performed* -- a hard bounce, an unreachable
+    #: gateway. A declined payment is NOT an execution failure: the action ran exactly as
+    #: intended and the answer was no. Conflating the two sends every case with three
+    #: ordinary declines to a human, which would bury an operator in non-decisions while
+    #: the genuine infrastructure failures scrolled past.
+    execution_failed: bool = False
     at: datetime = Field(default_factory=utcnow)
 
 
@@ -136,6 +164,16 @@ class AuditEvent(BaseModel):
     cost: float = 0.0
     next_step: str = ""
     attempt_count: int = 0
+    #: Reproducibility fields, covered by the chain from hash version 2 on. Without them
+    #: a stored decision cannot be re-derived: knowing an action was approved is not the
+    #: same as being able to show which model and which rule set approved it.
+    tenant_id: str = "default"
+    model_version: str | None = None
+    policy_version: str | None = None
+    agent_run_id: str | None = None
+    #: Hash of the decision inputs, so a row can be tied to the exact case state that
+    #: produced it without copying customer data into the log.
+    input_hash: str | None = None
     prev_hash: str | None = None
     row_hash: str | None = None
 
@@ -174,6 +212,14 @@ class AgentState(BaseModel):
     recovered_passively: bool = False
     hours_since_last_attempt: float = 1e9
     instrument_fixed: bool = False
+    #: Consecutive executor failures. Feeds `R-REVIEW-REPEATED-FAILURE`: a case the world
+    #: keeps refusing is a case to ask a person about, not one to push harder on.
+    consecutive_execution_failures: int = 0
+    #: The customer explicitly asked for a human on this case.
+    support_requested: bool = False
+    #: True once a policy verdict withheld an action pending approval.
+    pending_review: bool = False
+    review_ids: list[str] = Field(default_factory=list)
 
     status: CaseStatus = CaseStatus.PENDING
     outcome: str | None = None

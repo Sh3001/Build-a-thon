@@ -15,15 +15,17 @@ from pathlib import Path
 from backend.app.agents.llm import build_planner
 from backend.app.agents.runner import run_agent_batch
 from backend.app.audit.store import AuditStore
-from backend.app.database.operational import ActionLedger, DLQStore
 from backend.app.config import DB_PATH, DB_URL, RUN_DIR, SEED
+from backend.app.database.operational import ActionLedger, DLQStore
 from backend.app.database.store import CaseStore
 from backend.app.ml.scorer import get_scorer
 from backend.app.services.baseline import run_baseline
 from backend.app.services.control import run_control
 from backend.app.services.dataio import load_split, to_transactions
 from backend.app.services.results import (
-    bootstrap_incremental, compare, compare_to_control, summarize,
+    bootstrap_incremental,
+    compare,
+    compare_to_control,
 )
 from simulation.payment_gateway import PaymentGateway
 
@@ -188,11 +190,11 @@ def main() -> int:
     print("-" * 78)
     vc = vs_control["recoverai"]
     vcb = vs_control["baseline"]
-    print(f"  IMPACT vs NO-TOUCH CONTROL (the causal number)")
+    print("  IMPACT vs NO-TOUCH CONTROL (the causal number)")
     print(f"  {'incremental revenue':<28}{money(vcb['incremental_recovered_revenue']):>26}"
           f"{money(vc['incremental_recovered_revenue']):>14}")
-    print(f"  {'incremental cases':<28}{str(vcb['incremental_cases_recovered']):>26}"
-          f"{str(vc['incremental_cases_recovered']):>14}")
+    print(f"  {'incremental cases':<28}{vcb['incremental_cases_recovered']!s:>26}"
+          f"{vc['incremental_cases_recovered']!s:>14}")
     causal_b = f"{vcb['share_of_revenue_that_is_causal']:.1%}"
     causal_a = f"{vc['share_of_revenue_that_is_causal']:.1%}"
     print(f"  {'share of revenue that is causal':<28}{causal_b:>26}{causal_a:>14}")
@@ -204,7 +206,7 @@ def main() -> int:
     print("-" * 78)
     print(f"  INCREMENTAL RECOVERED REVENUE   {money(comparison['incremental_recovered_revenue']):>32}")
     print(f"  recovery uplift                 {str(comparison['recovery_uplift_pct']) + '%':>32}")
-    print(f"  incremental cases               {str(comparison['incremental_cases_recovered']):>32}")
+    print(f"  incremental cases               {comparison['incremental_cases_recovered']!s:>32}")
     print(f"  incremental ROI                 {str(comparison['incremental_roi']) + 'x':>32}")
     bs = comparison.get("bootstrap") or {}
     if bs:

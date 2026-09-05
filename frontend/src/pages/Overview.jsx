@@ -37,7 +37,7 @@ export function Overview({ overview: o, metrics: m, onDrill }) {
         <StatTile label="Money We Caused" value={fmtMoney(o.incremental_vs_control)} tone="good"
                   hint="Gross recovery minus what the untouched control arm collected on its own. This is the number that survives scrutiny."
                   sub={o.control_ci_low != null
-                    ? `vs no-touch control · 90% CI ${fmtMoney(o.control_ci_low)}–${fmtMoney(o.control_ci_high)}`
+                    ? `vs no-touch control · 90% CI ${fmtMoney(o.control_ci_low)} to ${fmtMoney(o.control_ci_high)}`
                     : "incremental over doing nothing"} />
         <StatTile label="Would Have Arrived Anyway" value={fmtMoney(o.control_recovered)}
                   hint="The no-touch control arm. These cases self-cured with no intervention at all."
@@ -46,7 +46,7 @@ export function Overview({ overview: o, metrics: m, onDrill }) {
         <StatTile label="Incremental vs Baseline" value={fmtMoney(o.incremental_recovery_vs_baseline)}
                   tone="good"
                   sub={o.incremental_ci_low != null
-                    ? `vs retry-every-24h · 90% CI ${fmtMoney(o.incremental_ci_low)}–${fmtMoney(o.incremental_ci_high)}`
+                    ? `vs retry-every-24h · 90% CI ${fmtMoney(o.incremental_ci_low)} to ${fmtMoney(o.incremental_ci_high)}`
                     : `${o.recovery_uplift_pct}% uplift over retry-every-24h`} />
         <StatTile label="Cases Escalated" value={fmtNum(o.cases_escalated)}
                   sub="handed to human review"

@@ -8,7 +8,9 @@ RUN npm run build
 
 # ---- stage 2: the application ------------------------------------------------
 FROM python:3.11-slim
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+# `development` is the container default so `docker compose up` works with no secrets.
+# The production profile refuses to start without them -- see backend/app/profiles.py.
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 RECOVERAI_PROFILE=development
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
@@ -21,8 +23,18 @@ COPY backend/ ./backend/
 COPY ml/ ./ml/
 COPY simulation/ ./simulation/
 COPY scripts/ ./scripts/
+# The simulator scenarios, the cost model and the effect priors. These are inputs to
+# every decision the system makes, so leaving them out would make the container behave
+# differently from a local run while looking identical.
+COPY config/ ./config/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 RUN pip install -e .
+
+# Run as a non-root user. The application writes only to /app/data, which the volume
+# mount owns, so nothing needs write access to the code.
+RUN useradd --create-home --uid 10001 recoverai \
+    && mkdir -p /app/data && chown -R recoverai:recoverai /app
+USER recoverai
 
 EXPOSE 8000
 # Build the dataset, model and experiment on first boot, then serve.

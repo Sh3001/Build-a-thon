@@ -1,0 +1,45 @@
+# Coefficients of the expected-incremental-profit objective.
+#
+# These are ASSUMPTIONS, not measurements. They are in a file rather than in code so a
+# reviewer can disagree with a number without reading Python, and so a merchant with real
+# figures can substitute them. Nothing here has been calibrated against a real dunning
+# programme; see docs/experiments.md for what would be needed to do so.
+
+fees:
+  # Blended card rate. Real merchant pricing varies by method, geography and volume.
+  processing_rate: 0.029
+  processing_fixed_usd: 0.30
+  # Share of recovered payments later disputed, and what a dispute costs to handle.
+  # Recovery attempts on already-annoyed customers dispute at above-portfolio rates;
+  # this coefficient is where that belief is stated rather than assumed away.
+  chargeback_rate: 0.004
+  chargeback_cost_usd: 15.00
+
+inference:
+  # Per-case LLM spend attributed to the decision, so inference shows up in ROI rather
+  # than being quietly excluded. Zero on the deterministic planner.
+  usd_per_case: 0.0
+
+actions:
+  retry_payment:
+    direct_usd: 0.02          # per-attempt processor charge
+    contact_usd: 0.0          # a re-presentment is not a customer touch
+    risk_usd: 0.01            # issuers penalise repeated re-presentment
+  send_reminder:
+    direct_usd: 0.01
+    contact_usd: 0.05         # goodwill, priced so the optimiser cannot spend it freely
+    risk_usd: 0.02            # unsubscribe / annoyance
+  send_payment_link:
+    direct_usd: 0.04
+    contact_usd: 0.05
+    risk_usd: 0.02
+  request_payment_method_update:
+    direct_usd: 0.04
+    contact_usd: 0.06         # asking for card details is a bigger ask than a reminder
+    risk_usd: 0.03
+  escalate_case:
+    operational_usd: 2.50     # a human minute is the expensive resource
+  wait:
+    direct_usd: 0.0
+  stop:
+    direct_usd: 0.0

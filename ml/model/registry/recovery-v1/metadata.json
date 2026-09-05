@@ -1,0 +1,144 @@
+{
+  "model_version": "logistic-recovery-v1",
+  "algorithm": "logistic",
+  "algorithm_selected_on": "validation ROC-AUC",
+  "candidates": {
+    "xgboost": 0.8056325860193263,
+    "logistic": 0.810634825828196
+  },
+  "trained_at": "2026-09-01T17:37:47.041003+00:00",
+  "seed": 20260822,
+  "n_train": 8330,
+  "n_val": 1828,
+  "best_iteration": 126,
+  "features": [
+    "amount_usd",
+    "failure_count",
+    "days_since_failure",
+    "customer_tenure",
+    "previous_success_rate",
+    "previous_payment_attempts",
+    "avg_transaction_value_usd",
+    "days_since_last_payment",
+    "subscription_age",
+    "overdue_days",
+    "previous_recovery_count",
+    "amount_ratio",
+    "log_amount",
+    "attempts_per_year",
+    "recovery_history_rate",
+    "days_x_temporary",
+    "days_x_funds",
+    "overdue_ratio",
+    "payment_method=card",
+    "payment_method=upi",
+    "payment_method=upi_autopay",
+    "payment_method=netbanking",
+    "payment_method=ach",
+    "payment_method=wallet",
+    "failure_code=bank_timeout",
+    "failure_code=network_error",
+    "failure_code=processor_unavailable",
+    "failure_code=temporary_decline",
+    "failure_code=insufficient_funds",
+    "failure_code=expired_card",
+    "failure_code=invalid_payment_method",
+    "failure_code=payment_limit_exceeded",
+    "failure_code=multiple_declines",
+    "failure_code=invalid_account",
+    "failure_code=closed_account",
+    "failure_code=suspected_fraud",
+    "failure_code=high_risk_transaction",
+    "failure_code=compliance_hold",
+    "failure_category=TEMPORARY",
+    "failure_category=CUSTOMER_ACTION",
+    "failure_category=PERSISTENT",
+    "failure_category=RISK_COMPLIANCE",
+    "customer_segment=consumer",
+    "customer_segment=smb",
+    "customer_segment=enterprise",
+    "preferred_channel=email",
+    "preferred_channel=sms",
+    "preferred_channel=whatsapp",
+    "preferred_channel=in_app",
+    "country=US",
+    "country=IN",
+    "country=GB",
+    "country=DE",
+    "country=SG",
+    "country=AU"
+  ],
+  "params": {
+    "n_estimators": 800,
+    "max_depth": 5,
+    "learning_rate": 0.045
+  },
+  "validation": {
+    "roc_auc": 0.810634825828196,
+    "pr_auc": 0.7064811223814319,
+    "brier": 0.16592671556376615,
+    "logistic_roc_auc": 0.810634825828196
+  },
+  "top_features": [
+    {
+      "feature": "failure_count",
+      "importance": 0.5629096911349836
+    },
+    {
+      "feature": "days_x_temporary",
+      "importance": 0.5536622430338414
+    },
+    {
+      "feature": "previous_success_rate",
+      "importance": 0.4427874426536807
+    },
+    {
+      "feature": "failure_category=RISK_COMPLIANCE",
+      "importance": 0.34993338512722605
+    },
+    {
+      "feature": "failure_category=TEMPORARY",
+      "importance": 0.3208094641731505
+    },
+    {
+      "feature": "failure_category=PERSISTENT",
+      "importance": 0.3196742886196413
+    },
+    {
+      "feature": "failure_code=invalid_account",
+      "importance": 0.2924530403745153
+    },
+    {
+      "feature": "failure_code=insufficient_funds",
+      "importance": 0.27522605236642306
+    },
+    {
+      "feature": "failure_code=suspected_fraud",
+      "importance": 0.25137624670406367
+    },
+    {
+      "feature": "previous_recovery_count",
+      "importance": 0.24732495711672886
+    },
+    {
+      "feature": "failure_code=high_risk_transaction",
+      "importance": 0.2250924337495582
+    },
+    {
+      "feature": "failure_code=bank_timeout",
+      "importance": 0.20400556164453756
+    },
+    {
+      "feature": "failure_code=closed_account",
+      "importance": 0.1968947751250491
+    },
+    {
+      "feature": "failure_code=network_error",
+      "importance": 0.17747198783988816
+    },
+    {
+      "feature": "failure_code=invalid_payment_method",
+      "importance": 0.15721616033736938
+    }
+  ]
+}

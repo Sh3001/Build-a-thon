@@ -45,7 +45,7 @@ class UpliftModel:
     n_control: int = 0
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, treated: np.ndarray,
-            seed: int = 20260822, **kw) -> "UpliftModel":
+            seed: int = 20260822, **kw) -> UpliftModel:
         """`treated` is a boolean mask of who received the intervention.
 
         Each model only ever sees its own arm, so neither can learn the treatment
@@ -110,7 +110,7 @@ class UpliftModel:
                      "n_treated": self.n_treated, "n_control": self.n_control}, path)
 
     @classmethod
-    def load(cls, path: Path) -> "UpliftModel":
+    def load(cls, path: Path) -> UpliftModel:
         import joblib
         b = joblib.load(path)
         return cls(treated_model=b["treated"], control_model=b["control"],

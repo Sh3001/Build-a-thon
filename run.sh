@@ -21,6 +21,11 @@ RecoverAI
   ./run.sh demo [ARGS]    full pipeline, then serve   (--quick, --no-serve, ...)
   ./run.sh test [ARGS]    run the test suite
   ./run.sh pipeline       dataset -> train -> evaluate -> experiment (no server)
+  ./run.sh multiseed [N]  seven arms across N seeds with confidence intervals (default 20)
+  ./run.sh sweep [N]      the same, across all nine simulator scenarios (default 8)
+  ./run.sh verify [CASE]  verify the audit chain; with a transaction id, its timeline
+  ./run.sh bench          throughput and per-case latency at increasing batch sizes
+  ./run.sh check          ruff + mypy on the safety-critical modules + the test suite
   ./run.sh shell          a python REPL with the project importable
 USAGE
 }
@@ -39,6 +44,20 @@ case "$cmd" in
     "$PY" ml/train.py
     "$PY" ml/evaluate.py
     exec "$PY" scripts/run_experiment.py --fresh
+    ;;
+  multiseed) exec "$PY" scripts/run_multiseed.py --seeds "${1:-20}" "${@:2}" ;;
+  sweep)     exec "$PY" scripts/run_multiseed.py --sweep --seeds "${1:-8}" "${@:2}" ;;
+  verify)
+    if [[ -n "${1:-}" ]]; then exec "$PY" scripts/verify_audit.py --case "$1"; fi
+    exec "$PY" scripts/verify_audit.py
+    ;;
+  bench)    exec "$PY" scripts/bench_throughput.py "$@" ;;
+  check)
+    # The three gates CI runs, in the order that fails fastest.
+    "$HERE/.venv/bin/ruff" check backend simulation scripts ml
+    "$HERE/.venv/bin/mypy" backend/app/policies backend/app/domain \
+        backend/app/security backend/app/decision
+    exec "$PY" -m pytest backend/tests/ -q
     ;;
   shell)    exec "$PY" ;;
   ""|-h|--help|help) usage ;;

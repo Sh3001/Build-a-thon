@@ -29,7 +29,7 @@ import pandas as pd
 
 from backend.app.config import ACTION_COST_USD, MODEL_DIR, RUN_DIR, SEED
 from backend.app.services.results import CaseOutcome, bootstrap_incremental, summarize
-from ml.train_real import FEATURES, REAL_DIR
+from ml.train_real import REAL_DIR
 
 #: Log-odds lift of a well-targeted intervention at the reference effect size (1.0).
 #: Anchored on published industry reporting that smart recovery roughly doubles the
@@ -235,7 +235,7 @@ def main() -> int:
 
     ref = next((r for r in rows if abs(r["effect"] - 1.0) < 1e-9), rows[-1])
     ci = ref["bootstrap"]["incremental_revenue"]
-    print(f"\n  at the reference effect size (1.0):")
+    print("\n  at the reference effect size (1.0):")
     print(f"    incremental vs status quo  ${ref['incremental_vs_status_quo']:,.0f}   "
           f"90% CI ${ci['p05']:,.0f} to ${ci['p95']:,.0f}")
     print(f"    customer contacts          agent {ref['agent_contacts']:,} vs "
@@ -244,7 +244,7 @@ def main() -> int:
     print(f"    action cost                ${ref['agent_cost']:,.2f}")
 
     out = {"source": "UCI default of credit card clients (real)",
-           "n_cases": int(len(test)), "at_risk_usd": round(float(test["amount_usd"].sum()), 2),
+           "n_cases": len(test), "at_risk_usd": round(float(test["amount_usd"].sum()), 2),
            "status_quo": sq, "sweep": rows}
     (RUN_DIR / "real_experiment.json").write_text(json.dumps(out, indent=2, default=str))
     print(f"\n  saved -> {RUN_DIR}/real_experiment.json")

@@ -1,0 +1,77 @@
+# Per-action effect priors, and the passive-recovery baseline.
+#
+# READ THIS BEFORE TRUSTING THE NUMBERS.
+#
+# `effects` are NOT measured. No randomised multi-armed experiment has been run in this
+# project, so nothing here can tell you what an SMS is worth relative to a payment link.
+# Each value says: "given that intervening at all lifts recovery by U for this case, this
+# action captures this share of U for this cause." They are informed guesses, in a file,
+# so that they can be argued with and replaced.
+#
+# A value of 0.0 is different in kind from the rest: it is a structural claim about the
+# payment rails -- you cannot debit a closed account, and re-presenting a dead card
+# cannot succeed no matter how the coefficients are tuned. Those zeros are facts.
+#
+# `passive_recovery` is P(recover | no action). When an uplift model is loaded its
+# control arm replaces these; otherwise they are the counterfactual, and the control arm
+# of any experiment run is the thing that would measure them properly.
+
+effects:
+  NETWORK_FAILURE:
+    retry_payment: 1.30
+    send_reminder: 0.25
+    send_payment_link: 0.55
+    request_payment_method_update: 0.10
+  TEMPORARY_DECLINE:
+    retry_payment: 1.10
+    send_reminder: 0.35
+    send_payment_link: 0.65
+    request_payment_method_update: 0.20
+  INSUFFICIENT_FUNDS:
+    retry_payment: 0.85
+    send_reminder: 0.70
+    send_payment_link: 0.90
+    request_payment_method_update: 0.25
+  LIMIT_EXCEEDED:
+    retry_payment: 0.45
+    send_reminder: 0.30
+    send_payment_link: 1.05
+    request_payment_method_update: 0.60
+  EXPIRED_PAYMENT_METHOD:
+    retry_payment: 0.0            # structural
+    send_reminder: 0.20
+    send_payment_link: 0.85
+    request_payment_method_update: 1.25
+  INVALID_PAYMENT_METHOD:
+    retry_payment: 0.0            # structural
+    send_reminder: 0.15
+    send_payment_link: 0.80
+    request_payment_method_update: 1.20
+  ACCOUNT_CLOSED:
+    retry_payment: 0.0            # structural
+    send_reminder: 0.20
+    send_payment_link: 1.00
+    request_payment_method_update: 0.55
+  DO_NOT_HONOR:
+    retry_payment: 0.20
+    send_reminder: 0.25
+    send_payment_link: 0.95
+    request_payment_method_update: 0.50
+  # Empty: risk and compliance are not an optimisation problem, and leaving the maps
+  # empty means the argmax cannot select an automated action even before policy refuses.
+  FRAUD_SUSPECTED: {}
+  COMPLIANCE_HOLD: {}
+  UNKNOWN: {}
+
+passive_recovery:
+  NETWORK_FAILURE: 0.26
+  TEMPORARY_DECLINE: 0.17
+  INSUFFICIENT_FUNDS: 0.15
+  LIMIT_EXCEEDED: 0.13
+  EXPIRED_PAYMENT_METHOD: 0.07
+  INVALID_PAYMENT_METHOD: 0.05
+  ACCOUNT_CLOSED: 0.01
+  DO_NOT_HONOR: 0.04
+  FRAUD_SUSPECTED: 0.02
+  COMPLIANCE_HOLD: 0.05
+  UNKNOWN: 0.10

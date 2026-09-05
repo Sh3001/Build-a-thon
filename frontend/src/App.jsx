@@ -6,6 +6,7 @@ import { Trace } from "./pages/Trace";
 import { Analytics } from "./pages/Analytics";
 import { AuditLog } from "./pages/AuditLog";
 import { DLQ } from "./pages/DLQ";
+import { Reviews } from "./pages/Reviews";
 import { Assistant } from "./pages/Assistant";
 
 const TABS = [
@@ -13,6 +14,7 @@ const TABS = [
   ["queue", "Recovery Queue"],
   ["trace", "Agent Trace"],
   ["analytics", "Revenue Analytics"],
+  ["reviews", "Human Review"],
   ["audit", "Audit Log"],
   ["dlq", "Dead Letter Queue"],
   ["ask", "Ask"],
@@ -149,6 +151,7 @@ export default function App() {
       {tab === "trace" && <Trace transactionId={selected} onSelect={setSelected}
                                  caseIds={caseIds} onBack={() => setTab("queue")} />}
       {tab === "analytics" && <Analytics metrics={metrics} />}
+      {tab === "reviews" && <Reviews onSelect={openCase} />}
       {tab === "audit" && <AuditLog onSelect={openCase} />}
       {tab === "dlq" && <DLQ />}
       {tab === "ask" && <Assistant onOpenCase={openCase} />}

@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from backend.app.chat import answer as render
-from backend.app.chat.dsl import Agg, DataQuery, Op, run as run_query
+from backend.app.chat.dsl import Agg, DataQuery
+from backend.app.chat.dsl import run as run_query
 from backend.app.chat.parse import parse
 from backend.app.database.db import connect
 from backend.app.database.migrations import migrate

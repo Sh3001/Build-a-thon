@@ -60,7 +60,7 @@ def main() -> int:
           f"amount-ranking {a:.1%} ({m/a:.2f}x) vs random {r:.1%} ({m/r:.2f}x)")
 
     out = {"source": "UCI default of credit card clients (real)",
-           "n_cases": int(len(test)), "recoverable_usd": round(recoverable, 2),
+           "n_cases": len(test), "recoverable_usd": round(recoverable, 2),
            "assumptions": "none -- real amounts and real observed outcomes only",
            "results": results}
     (RUN_DIR / "real_prioritization.json").write_text(json.dumps(out, indent=2))

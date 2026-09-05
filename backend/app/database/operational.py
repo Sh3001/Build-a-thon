@@ -8,14 +8,14 @@ id keeps replay-safety within a run while leaving runs independent.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from backend.app.config import DB_PATH, DB_URL, DLQ_FAILURE_THRESHOLD
 from backend.app.database.db import Connection, connect
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _migrate(conn) -> None:

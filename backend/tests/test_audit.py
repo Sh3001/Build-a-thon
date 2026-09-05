@@ -1,6 +1,8 @@
 """Phase 7 tests -- the audit log's tamper-evidence and append-only guarantees."""
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from backend.app.audit.store import FIELDS, AuditStore
@@ -79,7 +81,7 @@ def test_every_row_links_to_its_predecessor(store):
     store.commit()
     rows = [dict(r) for r in store.conn.execute("SELECT * FROM audit_log ORDER BY seq")]
     assert rows[0]["prev_hash"] == "0" * 64
-    for prev, cur in zip(rows, rows[1:]):
+    for prev, cur in itertools.pairwise(rows):
         assert cur["prev_hash"] == prev["row_hash"]
 
 

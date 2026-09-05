@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-from backend.app.config import ACTION_COST_USD
+from backend.app.config import ACTION_COST_USD, DELIVERY_FAILURE_RATE
 from backend.app.database.operational import ActionLedger, DLQStore
 from backend.app.models.enums import ActionOutcome, InterventionType
 from backend.app.models.schemas import ActionResult, AgentState, PolicyResult
@@ -35,6 +35,11 @@ class PolicyViolation(RuntimeError):
 class ActionExecutor:
     gateway: PaymentGateway = field(default_factory=PaymentGateway)
     notifier: NotificationService = field(default_factory=NotificationService)
+    #: Set False to keep an explicitly configured notifier's own failure rate. True (the
+    #: default) makes the gateway's scenario the single source of truth for the run --
+    #: without it a scenario could declare a bounce rate that nothing ever read, which is
+    #: worse than not offering the setting at all.
+    adopt_gateway_config: bool = True
     #: idempotency key -> the result originally produced (in-process fast path)
     _seen: dict[str, ActionResult] = field(default_factory=dict, repr=False)
     #: Optional durable mirror of `_seen`. None keeps the original in-memory-only
@@ -44,6 +49,20 @@ class ActionExecutor:
     dlq: DLQStore | None = None
     escalations: list[dict] = field(default_factory=list)
     bounces: list[dict] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Adopt the run's simulation scenario, if one was supplied on the gateway.
+
+        Only when the notifier is still at its module default: a caller that passed an
+        explicit `NotificationService(failure_rate=...)` -- which the tests do constantly
+        -- means it, and silently overriding them would make the failure-injection tests
+        untrustworthy.
+        """
+        cfg = getattr(self.gateway, "config", None)
+        if cfg is None or not self.adopt_gateway_config:
+            return
+        if self.notifier.failure_rate == DELIVERY_FAILURE_RATE:
+            self.notifier.failure_rate = cfg.delivery_failure_rate
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -99,7 +118,11 @@ class ActionExecutor:
                              "action": kind.value, "quarantined": newly})
         detail = str(exc) + (" -- channel quarantined after repeated failures" if newly else "")
         return ActionResult(action=kind, outcome=ActionOutcome.FAILURE,
-                            detail=detail, idempotency_key=key)
+                            detail=detail, idempotency_key=key,
+                            # The message never reached the customer. This is a failure to
+                            # execute, unlike a decline, and it is the kind that should
+                            # eventually suspend automated handling on the case.
+                            execution_failed=True)
 
     def _dispatch(self, state: AgentState, policy: PolicyResult, txn: dict, key: str) -> ActionResult:
         action = policy.effective_action
@@ -129,6 +152,9 @@ class ActionExecutor:
             action=InterventionType.RETRY_PAYMENT,
             outcome=ActionOutcome.SUCCESS if res.success else ActionOutcome.FAILURE,
             amount_recovered=round(res.amount, 2), detail=res.detail, idempotency_key=key,
+            # An outage is a failure to *execute*; a decline is not. Only the first should
+            # count toward suspending automated handling on the case.
+            execution_failed=getattr(res, "unavailable", False),
         )
 
     def _delivered(self, customer_id: str, channel: str) -> None:

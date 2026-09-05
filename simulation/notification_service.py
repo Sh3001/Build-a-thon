@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from backend.app.config import DELIVERY_FAILURE_RATE
 
@@ -23,7 +23,7 @@ class Notification:
     channel: str
     kind: str
     body: str
-    at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 TEMPLATES: dict[str, str] = {

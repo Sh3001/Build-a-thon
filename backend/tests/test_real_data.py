@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backend.app.config import DATA_PROCESSED, MODEL_DIR, RUN_DIR
+from backend.app.config import DATA_PROCESSED, MODEL_DIR
 
 SOURCE = Path("data/external/uci_credit.xls")
 REAL_DIR = DATA_PROCESSED / "real"
@@ -131,8 +131,8 @@ def test_features_available_at_decision_time(real_test):
 @needs_model
 @needs_splits
 def test_real_model_beats_chance_on_held_out_data(real_test):
-    from sklearn.metrics import roc_auc_score
     import joblib
+    from sklearn.metrics import roc_auc_score
     b = joblib.load(MODEL_DIR / "real" / "model.joblib")
     X = real_test[b["features"]].astype(float).fillna(0.0)
     raw = (b["xgb"].predict_proba(X)[:, 1] if b["kind"] == "xgboost"
@@ -242,7 +242,10 @@ def test_experiment_is_reproducible(real_test):
 def test_agent_respects_guardrails_on_real_cases(real_test):
     """Escalation and the value floor must behave the same on real data as on synthetic."""
     from scripts.run_real_experiment import (
-        ESCALATE_MONTHS_LATE, MAX_AUTO_USD, load_model, run_agent,
+        ESCALATE_MONTHS_LATE,
+        MAX_AUTO_USD,
+        load_model,
+        run_agent,
     )
     d = real_test.copy()
     d["p_base"] = load_model()(d)

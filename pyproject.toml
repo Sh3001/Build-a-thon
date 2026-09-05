@@ -14,3 +14,94 @@ include = ["backend*", "simulation*", "scripts*", "ml*"]
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+# ---------------------------------------------------------------- lint
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["frontend", "data", "ml/model"]
+
+[tool.ruff.lint]
+# Deliberately not the maximal rule set. Each family below catches a class of bug that
+# has actually appeared in this codebase or would be expensive if it did; a linter that
+# fires on style opinions gets `# noqa`'d until it fires on nothing.
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes: undefined names, unused imports
+    "I",          # import ordering
+    "B",          # bugbear: mutable defaults, loop-variable capture
+    "C4",         # comprehension simplifications
+    "UP",         # pyupgrade
+    "SIM",        # obvious simplifications
+    "RUF",        # ruff's own
+    "S",          # bandit: hardcoded secrets, weak crypto, shell injection
+]
+ignore = [
+    "E501",       # line length is handled by the formatter, not by failing the build
+    "B008",       # FastAPI's Depends() in a default is the framework's idiom
+    "S101",       # assert is how the test suite is written
+    "S311",       # `random` is used for simulation and bootstrapping, never for secrets
+    "SIM108",     # a ternary is not always clearer than an if
+    # `class X(str, Enum)` is deliberate: these values are serialised into JSON, stored
+    # in SQLite TEXT columns and compared against raw strings from the database. StrEnum
+    # would work too, but changing 14 enums to gain nothing is churn, not a fix.
+    "UP042",
+    # Every flagged query builds its SQL from closed sets (a sorted allowlist of column
+    # names, a literal table name) and passes user input as parameters. The lint cannot
+    # see that; `CaseStore.queue` has the allowlist inline and a test that covers it.
+    "S608",
+    # `zip(..., strict=True)` on sequences this code has already length-checked adds a
+    # second, less informative error path.
+    "B905",
+    # `except Exception: pass` around metrics and bus publishing is deliberate and
+    # commented at each site: observability must never change a recovery decision.
+    "S110",
+    # Subprocess calls are `git rev-parse` in the reproducibility recorder, with a fixed
+    # argument list and no shell.
+    "S603", "S607",
+    # `a, _ = f()` where the tuple shape is the API. Renaming the ignored half to `_x`
+    # everywhere makes the call sites less readable than the warning is worth.
+    "RUF059",
+    # `dict(a=1)` reads better than a literal where the keys are keyword-shaped, which is
+    # how the ML parameter dicts are written.
+    "C408",
+    # `int(...)` around a value ruff can prove is already an int is defensive against a
+    # numpy scalar reaching a SQLite bind parameter, which is a real failure it cannot see.
+    "RUF046",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["S105", "S106", "S107"]   # test credentials are fixtures, not secrets
+"scripts/*" = ["T201"]                          # scripts print; that is their job
+# `pytest.raises(Exception)` is the point in two tests: they assert that a *broken*
+# collaborator surfaces rather than being swallowed, and narrowing the type there would
+# assert something weaker than intended.
+"backend/tests/test_chaos.py" = ["B017"]
+"backend/tests/test_llm_planner.py" = ["B017"]
+"backend/tests/test_policy.py" = ["B017"]
+"backend/tests/test_real_data.py" = ["F841"]
+
+# ---------------------------------------------------------------- types
+[tool.mypy]
+python_version = "3.11"
+warn_redundant_casts = true
+warn_unused_ignores = false
+ignore_missing_imports = true
+# Not `strict`. The ML layer passes DataFrames and numpy arrays through interfaces that
+# gain nothing from being fully annotated, and forcing it produces `Any` casts that make
+# the checker look satisfied while checking less. The modules where a type error would be
+# a *safety* bug are checked strictly below.
+check_untyped_defs = false
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# The safety envelope. A wrong type here is a wrong decision about money, so these are
+# held to a higher bar than the rest of the codebase.
+module = [
+    "backend.app.policies.*",
+    "backend.app.domain.*",
+    "backend.app.security.*",
+    "backend.app.decision.*",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true

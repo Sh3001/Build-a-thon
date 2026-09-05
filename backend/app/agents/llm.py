@@ -19,14 +19,16 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.app.config import (
-    ANTHROPIC_MODEL, ANTHROPIC_MODEL_FAST, LLM_ESCALATE_EV_USD,
-)
 from backend.app.agents.redaction import scrub
+from backend.app.config import (
+    ANTHROPIC_MODEL,
+    ANTHROPIC_MODEL_FAST,
+    LLM_ESCALATE_EV_USD,
+)
 from backend.app.models.enums import Channel, FailureCode, InterventionType
 from backend.app.models.schemas import AgentState, Diagnosis, ProposedAction, Transaction
 

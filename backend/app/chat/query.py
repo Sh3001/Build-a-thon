@@ -121,15 +121,22 @@ class ChatEngine:
             return Answer(intent=q.intent, query={},
                           text=f"No audit trail for {q.transaction_id}.")
         blocked = [r for r in rows if r["policy_result"] == "reject"]
+        # Withheld is not refused, and reporting it as such would tell an operator a case
+        # was dropped when it is in fact sitting in their own queue awaiting them.
+        withheld = [r for r in rows if r["policy_result"] == "human_review"]
         acted = [r for r in rows if r["action"] and r["policy_result"] == "approve"]
         text = (f"{q.transaction_id} has {len(rows)} audit events: {len(acted)} approved "
                 f"actions and {len(blocked)} refused by the policy engine.")
-        if blocked:
-            rules = sorted({r["rules_fired"] for r in blocked if r["rules_fired"]})
+        if withheld:
+            text += (f" {len(withheld)} action(s) were withheld for human approval rather "
+                     f"than refused.")
+        if blocked or withheld:
+            rules = sorted({r["rules_fired"] for r in [*blocked, *withheld]
+                            if r["rules_fired"]})
             text += f" Rules that fired: {', '.join(rules)}."
         return Answer(intent=q.intent, query={}, text=text,
                       data={"events": len(rows), "approved": len(acted),
-                            "rejected": len(blocked)},
+                            "rejected": len(blocked), "human_review": len(withheld)},
                       case_ids=[q.transaction_id])
 
     def _count_cases(self, q: Query) -> Answer:
@@ -234,7 +241,9 @@ class ChatEngine:
             text=(f"The policy engine issued {total:,} verdicts: "
                   f"{verdicts.get('approve', 0):,} approved, "
                   f"{verdicts.get('modify', 0):,} modified, "
-                  f"**{verdicts.get('reject', 0):,} rejected**. Most-fired rules: "
+                  f"{verdicts.get('human_review', 0):,} withheld for human approval, "
+                  f"**{verdicts.get('reject', 0):,} rejected**. Only the first two "
+                  f"permit execution. Most-fired rules: "
                   + ", ".join(f"`{k}` ({v})" for k, v in top) + "."),
             data={"verdicts": verdicts, "rules": dict(top)})
 

@@ -16,11 +16,16 @@ Three ideas carry most of the value over a fixed retry schedule:
 from __future__ import annotations
 
 from backend.app.config import (
-    MAX_AUTO_RECOVERY_AMOUNT_USD, MAX_CONTACTS_PER_CASE, MIN_EXPECTED_RECOVERY_USD,
+    MAX_AUTO_RECOVERY_AMOUNT_USD,
+    MAX_CONTACTS_PER_CASE,
+    MIN_EXPECTED_RECOVERY_USD,
     MIN_RETRY_INTERVAL_HOURS,
 )
 from backend.app.models.enums import (
-    Channel, FailureCategory, FailureCode, InterventionType,
+    Channel,
+    FailureCategory,
+    FailureCode,
+    InterventionType,
 )
 from backend.app.models.schemas import AgentState, Diagnosis, ProposedAction
 

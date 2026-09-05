@@ -7,15 +7,15 @@ with exactly the same hidden behaviour -- the only difference is what each one d
 """
 from __future__ import annotations
 
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from backend.app.agents.graph import RecoveryAgent
 from backend.app.config import SEED
+from backend.app.database.operational import ActionLedger, DLQStore
 from backend.app.ml.scorer import RecoveryScorer, get_scorer
-from backend.app.models.enums import CaseStatus, FailureCategory, FailureCode, category_of
+from backend.app.models.enums import CaseStatus, FailureCategory, category_of
 from backend.app.models.schemas import AgentState, AuditEvent
 from backend.app.services.results import CaseOutcome, summarize
-from backend.app.database.operational import ActionLedger, DLQStore  # noqa: F401
 from backend.app.tools.executor import ActionExecutor
 from simulation.payment_gateway import PaymentGateway
 
@@ -58,8 +58,14 @@ def run_agent_batch(
     planner=None,
     on_audit: Callable[[AuditEvent], None] | None = None,
     progress: Callable[[int, int], None] | None = None,
-    ledger: "ActionLedger | None" = None,
-    dlq: "DLQStore | None" = None,
+    ledger: ActionLedger | None = None,
+    dlq: DLQStore | None = None,
+    reviews=None,
+    optimizer=None,
+    bus=None,
+    opted_out: frozenset[str] = frozenset(),
+    tenant_id: str = "default",
+    run_id: str = "",
 ) -> tuple[list[CaseOutcome], dict, list[AgentState]]:
     txns = list(transactions)
     agent = RecoveryAgent(
@@ -68,6 +74,12 @@ def run_agent_batch(
         scorer=scorer or get_scorer(),
         planner=planner,
         on_audit=on_audit,
+        reviews=reviews,
+        optimizer=optimizer,
+        bus=bus,
+        opted_out=opted_out,
+        tenant_id=tenant_id,
+        run_id=run_id,
     )
     states: list[AgentState] = []
     for i, t in enumerate(txns, 1):

@@ -12,15 +12,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from backend.app.agents.graph import RecoveryAgent
 from backend.app.agents.llm import build_planner
 from backend.app.agents.runner import run_agent_batch, to_outcome
+from backend.app.api import ops as ops_router
+from backend.app.api import review as review_router
+from backend.app.api.deps import get_auth_policy, require
 from backend.app.audit.store import AuditStore
 from backend.app.config import DATA_PROCESSED, DB_PATH, DB_URL, ROOT, SEED
 from backend.app.database.db import engine_for
@@ -28,16 +31,95 @@ from backend.app.database.operational import DLQStore
 from backend.app.database.store import CaseStore
 from backend.app.ml.scorer import get_scorer
 from backend.app.models.api import (
-    AuditPage, CaseDetail, Health, LiveTrace, OverviewCards, QueueRow, RevenueAtRisk,
-    RunRequest, RunResponse,
+    AuditPage,
+    CaseDetail,
+    Health,
+    LiveTrace,
+    OverviewCards,
+    QueueRow,
+    RevenueAtRisk,
+    RunRequest,
+    RunResponse,
 )
+from backend.app.observability.logging import configure as configure_logging
+from backend.app.observability.metrics import M, get_registry
+from backend.app.policies.version import policy_version
+from backend.app.profiles import validate_or_raise as validate_profile_or_raise
+from backend.app.security.auth import Principal
 from backend.app.services.dataio import load_split, to_transactions
-from backend.app.services.results import compare, summarize
 from backend.app.tools.executor import ActionExecutor
 from simulation.payment_gateway import PaymentGateway
 
-app = FastAPI(title="RecoverAI", version="0.1.0",
+#: Refuse a body larger than this before reading it. A request-size limit is the cheapest
+#: denial-of-service defence there is, and it has to live in middleware because by the
+#: time a handler runs, the body has already been read into memory.
+MAX_REQUEST_BYTES = 1_048_576
+
+app = FastAPI(title="RecoverAI", version="0.2.0",
               description="Autonomous AI revenue recovery agent")
+
+
+@app.on_event("startup")
+def _configure() -> None:
+    """Install structured logging and resolve the auth policy.
+
+    `AuthPolicy.from_env()` raises in the production profile when no signing secret is
+    set, and letting that propagate here is the intent: a process that boots with
+    authentication silently disabled is worse than one that refuses to boot.
+    """
+    configure_logging()
+    # Refuse to boot a misconfigured production or staging environment. A process that
+    # starts anyway looks healthy while being unsafe, which is strictly worse than a
+    # crash loop somebody has to look at.
+    validate_profile_or_raise()
+    policy = get_auth_policy()
+    get_registry().gauge("build_info", 1, "static build facts",
+                         {"profile": policy.profile,
+                          "auth_required": str(policy.required).lower(),
+                          "policy_version": policy_version()})
+
+
+@app.middleware("http")
+async def _guard(request, call_next):
+    """Body-size cap, security headers, and per-request metrics.
+
+    Middleware rather than a dependency because all three have to apply to every route
+    including the ones that do not declare dependencies -- and a size limit enforced in a
+    handler has already lost.
+    """
+    import time as _time
+
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
+        return JSONResponse({"detail": "request body too large"}, status_code=413)
+
+    started = _time.perf_counter()
+    response = await call_next(request)
+    elapsed = _time.perf_counter() - started
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", "unmatched")
+    registry = get_registry()
+    registry.counter(M.API_REQUESTS, "API requests",
+                     {"method": request.method, "path": path,
+                      "status": str(response.status_code)})
+    registry.observe(M.API_LATENCY, elapsed, "API request duration",
+                     {"method": request.method, "path": path})
+
+    # Conservative defaults. The dashboard is same-origin and loads no third-party
+    # scripts, so a restrictive CSP costs nothing and closes the injection path that an
+    # audit-log viewer rendering stored strings would otherwise open.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+    response.headers.setdefault("Cache-Control", response.headers.get(
+        "Cache-Control", "no-store"))
+    return response
+
 
 @app.on_event("startup")
 def _check_database() -> None:
@@ -55,7 +137,7 @@ def _check_database() -> None:
         conn = connect(url=DB_URL)
         conn.execute("SELECT 1").fetchone()
         conn.close()
-    except Exception as exc:                                  # noqa: BLE001
+    except Exception as exc:
         raise RuntimeError(
             f"RECOVERAI_DB_URL is set but the database is unreachable: {exc}\n"
             f"Start Postgres, or unset RECOVERAI_DB_URL to fall back to SQLite."
@@ -68,6 +150,10 @@ app.add_middleware(
                    "http://localhost:4173", "http://127.0.0.1:4173"],
     allow_methods=["*"], allow_headers=["*"],
 )
+
+app.include_router(review_router.router)
+app.include_router(review_router.consent_router)
+app.include_router(ops_router.router)
 
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
@@ -107,6 +193,7 @@ def _row(d: dict) -> QueueRow:
 @app.get("/api/health", response_model=Health)
 def health() -> Health:
     scorer = get_scorer()
+    _auth = get_auth_policy()
     audit_rows, chain_ok, ready = 0, None, False
     # On Postgres there is no local file to stat, so presence of a URL is the signal.
     if DB_URL or DB_PATH.exists():
@@ -121,6 +208,11 @@ def health() -> Health:
         experiment_ready=ready, audit_rows=audit_rows, audit_chain_valid=chain_ok,
         llm_enabled=build_planner("auto") is not None,
         db_engine=engine_for(),
+        # The security posture is part of health. "We thought auth was on" should be a
+        # checkable statement, not a belief held until an incident.
+        profile=_auth.profile,
+        auth_required=_auth.required,
+        policy_version=policy_version(),
     )
 
 
@@ -250,7 +342,8 @@ def dlq_entries(quarantined_only: bool = True, limit: int = Query(500, ge=1, le=
 
 
 @app.post("/api/dlq/release")
-def dlq_release(customer_id: str, channel: str):
+def dlq_release(customer_id: str, channel: str,
+                who: Principal = Depends(require("write:dlq"))):
     """Human review outcome: put a quarantined pair back in service."""
     s_ = _cases()
     meta = s_.get_run("meta") or {}
@@ -280,7 +373,7 @@ def chat(req: ChatRequest) -> JSONResponse:
     state a wrong one.
     """
     from backend.app.chat import answer as render
-    from backend.app.chat.dsl import Agg, run as run_query
+    from backend.app.chat.dsl import run as run_query
     from backend.app.chat.parse import parse
     from backend.app.chat.query import ChatEngine
     from backend.app.chat.router import KeywordRouter
@@ -356,12 +449,14 @@ def baseline_metrics() -> JSONResponse:
 
 
 @app.post("/api/recovery/run", response_model=RunResponse)
-def run_recovery(req: RunRequest) -> RunResponse:
+def run_recovery(req: RunRequest,
+                 who: Principal = Depends(require("execute:action"))) -> RunResponse:
     """Work a slice of the queue live against the mock rails."""
     try:
         txns = to_transactions(load_split(req.split))[: req.limit]
-    except FileNotFoundError:
-        raise HTTPException(404, f"split {req.split!r} not found -- generate the dataset first")
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            404, f"split {req.split!r} not found -- generate the dataset first") from exc
 
     t0 = time.time()
     a = _audit()
@@ -385,7 +480,8 @@ def run_recovery(req: RunRequest) -> RunResponse:
 
 
 @app.post("/api/recovery/run/{transaction_id}", response_model=LiveTrace)
-def run_one(transaction_id: str, split: str = "test") -> LiveTrace:
+def run_one(transaction_id: str, split: str = "test",
+            who: Principal = Depends(require("execute:action"))) -> LiveTrace:
     """Work a single case live and return its full decision trace."""
     txns = {t["transaction_id"]: t for t in to_transactions(load_split(split))}
     txn = txns.get(transaction_id)

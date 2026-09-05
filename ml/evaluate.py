@@ -12,8 +12,13 @@ import json
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
-    average_precision_score, brier_score_loss, f1_score, precision_recall_curve,
-    precision_score, recall_score, roc_auc_score,
+    average_precision_score,
+    brier_score_loss,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
 )
 
 from backend.app.config import MODEL_DIR, RUN_DIR
@@ -26,7 +31,6 @@ def recovery_at_k(df: pd.DataFrame, ks: list[int]) -> list[dict]:
     """Rank by expected recovery; measure the recoverable revenue actually captured."""
     d = df.sort_values("expected_recovery", ascending=False).reset_index(drop=True)
     total_recoverable = float((d["amount_usd"] * d["recovered"]).sum())
-    total_cases = int(d["recovered"].sum())
     rows = []
     for k in ks:
         if k > len(d):
@@ -88,7 +92,7 @@ def main() -> int:
     yhat = (p >= best_thr).astype(int)
     metrics = {
         "split": a.split,
-        "n": int(len(df)),
+        "n": len(df),
         "positive_rate": round(float(y.mean()), 4),
         "model_version": scorer.model_version,
         "threshold": round(best_thr, 4),

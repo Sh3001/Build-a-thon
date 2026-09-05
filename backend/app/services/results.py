@@ -6,12 +6,12 @@ the headline comparison from quietly measuring two different things.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from statistics import mean
-from typing import Iterable
 
 from pydantic import BaseModel, Field
 
-from backend.app.models.enums import FailureCategory, FailureCode, category_of
+from backend.app.models.enums import FailureCategory, FailureCode
 
 
 class CaseOutcome(BaseModel):

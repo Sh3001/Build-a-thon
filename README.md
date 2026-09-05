@@ -6,7 +6,8 @@ as dollars recovered against a baseline dunning strategy on a held-out test set,
 flagged.
 
 ```
-1,842 held-out cases · $346,631 at risk · 30-day horizon · three arms, one population
+1,842 held-out cases · $346,631 at risk · 30-day horizon · one seed, three arms
+(the seven-arm, 20-seed table is below and is the one to read)
 
                         control      baseline     RecoverAI
 money recovered        $45,955      $107,344      $144,167
@@ -30,6 +31,30 @@ More money, on **43% fewer retries** than the baseline, with **zero** automated 
 fraud or compliance holds. Every figure here is produced by `scripts/run_experiment.py`;
 nothing is hard-coded.
 
+## What is demonstrated, what is simulated, what is not validated
+
+The distinction is load-bearing, so it is stated before anything else. It is also
+enforced in code: every experiment artefact carries a `provenance` field and a `claim`
+string, and `Provenance.combine()` refuses to pool kinds
+(`backend/app/domain/provenance.py`).
+
+| | Status | What it means |
+|---|---|---|
+| Policy engine cannot be bypassed | **demonstrated** | The executor's input is the gate's output; passing an unapproved verdict raises. One test per rule; a meta-test fails if a rule has no test. |
+| Idempotent execution | **demonstrated** | Three layers: in-process cache, durable ledger, provider idempotency header. Replay returns the original result. |
+| Audit chain verifies across a schema change | **demonstrated** | Per-row field-list versioning; an unknown version refuses rather than passing. |
+| Tenant isolation | **demonstrated** | Tenant comes from the credential, never the request; `tenant_id` is in the primary key. Nine isolation tests. |
+| Bounded termination | **demonstrated** | Three independent bounds; tested against a planner that will not settle. |
+| Recovery lift over control and baselines | **simulated** | Holds inside this simulator, across seeds and nine scenarios. Not evidence about real customers. |
+| Prediction quality on real delinquency data | **observational** | Real data, but nothing was assigned. Supports predictive claims only. |
+| Per-action effect sizes | **configured prior** | No randomised multi-armed data exists here. Every such estimate is labelled `CONFIGURED_PRIOR` and `is_measured` is False. |
+| Real-world causal effect | **not validated** | No live holdout, no real rail, no randomised production experiment. |
+| Security | **not audited** | No external review, no penetration test. See `docs/threat_model.md`. |
+| Throughput | **measured, single-process** | Flat at ~70 cases/s to 50,000 cases; 10.6 us per policy validation. Mock rails, one machine, not a distributed figure. |
+| Memory at scale | **measured, and a known problem** | The batch runner holds every case's state: ~700 MB at 10,000 cases. Fine for evaluation, wrong for a production worker. |
+
+---
+
 > **Read the case-rate lift, not the dollar total.** Recovery amounts are lognormal, so
 > dollar totals swing on whether a few large invoices land. The case-rate figures are
 > stable.
@@ -45,8 +70,9 @@ nothing is hard-coded.
 | **Use it** | [Dashboard](#the-dashboard) · [API](#api-reference) · [Configuration](#configuration-reference) |
 | **Operate it** | [Storage](#storage-sqlite-or-postgres) · [Migrations](#schema-migrations) · [Testing & CI](#testing-ci) |
 | **Trust it** | [Safety](#safety-and-guardrails) · [Audit log](#audit-log) · [Dead letter queue](#dead-letter-queue) |
-| **Check the claims** | [Model evaluation](#model-evaluation) · [Real data](#results-on-real-data) · [Uplift](#uplift-targeting) · [Results](#baseline-vs-recoverai) |
-| **The caveats** | [Known limitations](#known-limitations) |
+| **Check the claims** | [Multi-seed results](#multi-seed-results) · [The seven arms](#the-seven-arm-ladder) · [Performance](#performance) · [Model evaluation](#model-evaluation) · [Real data](#results-on-real-data) · [Uplift](#uplift-targeting) |
+| **The caveats** | [Known limitations](#known-limitations) · [Evidence status](#what-is-demonstrated-what-is-simulated-what-is-not-validated) |
+| **Go deeper** | [`docs/`](docs/): [architecture](docs/architecture.md) · [policy engine](docs/policy_engine.md) · [ML](docs/ml.md) · [causal inference](docs/causal_inference.md) · [experiments](docs/experiments.md) · [security](docs/security.md) · [threat model](docs/threat_model.md) · [production](docs/production.md) |
 
 ---
 
@@ -101,6 +127,11 @@ sibling project's virtualenv.
 | `./run.sh demo [ARGS]` | Full pipeline, then serve - `--quick`, `--no-serve` |
 | `./run.sh test [ARGS]` | The test suite |
 | `./run.sh pipeline` | dataset → train → evaluate → experiment, no server |
+| `./run.sh multiseed [N]` | Seven arms across N seeds with confidence intervals (default 20) |
+| `./run.sh sweep [N]` | The same, across all nine simulator scenarios (default 8) |
+| `./run.sh verify [CASE]` | Verify the audit chain; with a transaction id, print its timeline |
+| `./run.sh bench` | Throughput and per-case latency at increasing batch sizes |
+| `./run.sh check` | ruff + mypy on the safety-critical modules + the test suite |
 | `./run.sh shell` | Python REPL with the project importable |
 
 Step by step, if you want to watch each stage:
@@ -111,6 +142,32 @@ Step by step, if you want to watch each stage:
 .venv/bin/python ml/evaluate.py                    # held-out metrics
 .venv/bin/python scripts/run_experiment.py --fresh # control vs baseline vs RecoverAI
 .venv/bin/python -m uvicorn backend.app.main:app --port 8000
+```
+
+Evaluation beyond a single seed - this is where the honest numbers come from:
+
+```bash
+# seven arms, many seeds, intervals instead of a point estimate
+.venv/bin/python scripts/run_multiseed.py --seeds 20
+
+# does the finding survive a less flattering world?
+.venv/bin/python scripts/run_multiseed.py --seeds 10 --scenario pessimistic
+.venv/bin/python scripts/run_multiseed.py --seeds 10 --sweep      # all nine scenarios
+
+# with expected-incremental-profit arbitration
+.venv/bin/python scripts/run_multiseed.py --seeds 20 --optimizer
+
+# verify the decision record; exit code 0 only if the chain verifies end to end
+.venv/bin/python scripts/verify_audit.py
+.venv/bin/python scripts/verify_audit.py --case txn_0001234
+```
+
+Quality gates:
+
+```bash
+.venv/bin/ruff check backend simulation scripts ml
+.venv/bin/mypy backend/app/policies backend/app/domain backend/app/security backend/app/decision
+.venv/bin/python -m pytest backend/tests -q
 ```
 
 With Docker:
@@ -128,6 +185,7 @@ Frontend dev server (proxies `/api` to :8000): `cd frontend && npm run dev`
 
 ```
 Transaction events            data/processed/*.csv (customer-disjoint splits)
+                              or an external SQL source (RECOVERAI_SOURCE_URL)
         │
         ▼
 Feature engineering           backend/app/ml/features.py    55 features, enum-driven vocab
@@ -143,7 +201,7 @@ Recovery strategy agent       backend/app/agents/strategy.py   proposes only
         │                     backend/app/agents/llm.py        optional Claude planner
         ▼
 ╔═══════════════════════╗
-║   POLICY VALIDATOR    ║     backend/app/policies/engine.py   17 deterministic rules
+║   POLICY VALIDATOR    ║     backend/app/policies/engine.py   22 deterministic rules
 ╚═══════════════════════╝
         │  approve / modify / reject  ← the ONLY path to a side effect
         ▼
@@ -195,7 +253,7 @@ the 30-day horizon - so it terminates even if the planner never proposes `STOP`.
 
 ## The dashboard
 
-Six pages, all reachable with number keys **1**–**6**. Rows in the Recovery Queue and
+Eight pages, all reachable with number keys **1** to **8**. Rows in the Recovery Queue and
 Audit Log open the case behind them, so you can get from a headline number to the decision
 chain that produced it in two clicks.
 
@@ -225,6 +283,13 @@ $4,580.25. Where the baseline did better, the page says so rather than staying q
 category, and the baseline-vs-RecoverAI delta table. The delta column knows which direction
 is an improvement, so fewer retries reads as a win and extra cost does not.
 
+**Human Review** - the queue of cases the policy engine *withheld* rather than dropped,
+ordered by value, because an operator's minute is the scarce resource. Each row shows the
+rule that fired and what was proposed; approving requires a written reason and records an
+override. Approving does not execute: it authorises an action the executor will still run
+through the same gate. Below the queue, the append-only override log shows who decided
+what, when, and why.
+
 **Audit Log** - every decision and policy verdict, newest first. Filter by stage or policy
 verdict (both server-side, so **Reject** searches all rows rather than the visible page)
 and search the reason text.
@@ -232,11 +297,15 @@ and search the reason text.
 **Dead Letter Queue** - quarantined (customer, channel) pairs with a Release button. See
 [Dead letter queue](#dead-letter-queue).
 
+**Ask** - a natural-language query over the run. The router only ever picks an intent;
+every figure in the reply is computed from the database, so a model cannot state a number
+here and therefore cannot state a wrong one.
+
 **Keyboard**
 
 | Key | Action |
 |---|---|
-| `1`–`6` | Switch page |
+| `1` to `8` | Switch page |
 | `↑` `↓` | Move between table rows |
 | `Enter` | Open the focused row |
 | `/` | Jump to the search box |
@@ -280,6 +349,33 @@ GET /api/health
 ```
 
 ---
+
+### v1 surface added in this pass
+
+Every route below takes its tenant from the caller's credential. None accepts a tenant
+parameter, which is the whole of tenant isolation.
+
+| Route | Capability | Notes |
+|---|---|---|
+| `GET /api/v1/reviews` | `read:review` | The human-review queue, ordered by value |
+| `GET /api/v1/reviews/{id}` | `read:review` | 404 for another tenant's task, not 403 |
+| `POST /api/v1/reviews/{id}/approve` | `write:review` | Reason mandatory; records an override; **does not execute** |
+| `POST /api/v1/reviews/{id}/reject` | `write:review` | Reason mandatory |
+| `GET /api/v1/reviews/audit/overrides` | `read:overrides` | Append-only; readable by AUDITOR, who can approve nothing |
+| `POST /api/v1/consent/opt-out` | `write:review` | Enforced by `R-OPT-OUT` on the next evaluation |
+| `GET /api/v1/policy` | `read:metrics` | Every rule by tier, every limit, the derived version hash |
+| `GET /api/v1/models` | `read:models` | Registry contents and lifecycle status |
+| `POST /api/v1/models/{v}/promote` | `write:models` | ADMIN only; gated on a quality floor |
+| `GET /api/v1/metrics/prometheus` | none | Text exposition; no customer data, so no auth |
+| `GET /api/v1/metrics/snapshot` | `read:metrics` | The same series as JSON |
+| `POST /api/v1/webhooks/{provider}` | signature | Signature → freshness → replay → parse, in that order |
+| `GET /api/v1/dlq/events` | `read:metrics` | Failed event handlers (distinct from the delivery DLQ) |
+| `POST /api/v1/dlq/events/retry` | `write:dlq` | Quarantines after `max_attempts` |
+
+Authentication is by `X-API-Key: <key_id>.<secret>` or `Authorization: Bearer <jwt>`.
+Presenting both is refused. In the `development` profile an anonymous principal holds
+`ANALYST` and `AUDITOR`, so the dashboard works with no setup, and cannot
+execute anything.
 
 ## Storage: SQLite or Postgres
 
@@ -326,6 +422,85 @@ three tables and no ORM do not justify the dependency.
 
 ---
 
+## Reading cases from your own database
+
+`RECOVERAI_DB_URL` is where *this system's* data lives. `RECOVERAI_SOURCE_URL` is different:
+it is a read-only connection to **your** payments database, so a deployment works real
+failed payments instead of the generated dataset. Both live in `SqlSource`
+(`backend/app/services/dataio.py`), alongside the CSV loader every experiment uses.
+
+```bash
+export RECOVERAI_SOURCE_URL="postgresql://readonly@db.internal:5432/payments"
+export RECOVERAI_SOURCE_QUERY="SELECT * FROM failed_payments WHERE failed_at > now() - interval '30 days'"
+export RECOVERAI_SOURCE_PROVIDER=stripe        # stripe | razorpay | adyen
+export RECOVERAI_SOURCE_COLUMNS='{"cust_ref":"customer_id","txn_ref":"transaction_id",
+                                  "gross_amount":"amount","decline_reason":"failure_code"}'
+
+python -m backend.app.services.dataio --limit 20   # dry run: fetch a sample, report on it
+```
+
+`RECOVERAI_SOURCE_COLUMNS` maps *your* column names to `Transaction` fields; anything you
+do not name is assumed to match already. The preview command prints counts only, never row
+content - the point is to check the mapping before pointing a run at the source, not to
+dump customer data into a terminal.
+
+### Four properties, none of them optional
+
+**The connection is read-only.** The session is set read-only *and* the statement is
+rejected unless it is a single SELECT. Two checks rather than one, because
+`SELECT 1; DROP TABLE payments` passes the first and fails the second. A connection whose
+driver cannot be made read-only is refused outright rather than used.
+
+**Outcome columns never survive.** `recovered` and `recovery_days` are labels. A live run
+that could see them would be scoring the answer it was handed. They are dropped on the way
+in and the drop is reported, because a source carrying them is one somebody should look at.
+
+**Only schema fields survive.** A payments table holds emails, names and card fingerprints.
+The mapping is an allowlist of `Transaction` fields, so a column nobody mapped cannot ride
+along into a prompt, a log, or a model feature. `Transaction` has no PII fields at all, so
+this falls out of the schema rather than depending on a redaction pass.
+
+**An unmappable failure code is quarantined, not guessed.** `processor_codes.normalise`
+answers UNKNOWN when it does not recognise a code, and UNKNOWN has no `FailureCode`. Such a
+row comes back as a reject carrying its reason. Defaulting the unrecognised remainder to
+`temporary_decline` would turn a mapping gap into confident retries against instruments
+nobody has classified.
+
+### What a real fetch looks like
+
+Against a Postgres table with a deliberately awkward schema - renamed columns, PII, an
+outcome label, one unmappable code and one invalid payment method:
+
+```
+fetched 5, accepted 3, rejected 2
+  dropped outcome columns: was_recovered
+  ignored unmapped columns: cardholder_name, customer_email, decline_message
+  failure_count: 5 rows fell back to the schema default
+  ... 8 more features defaulted ...
+  days_since_failure: 1 rows fell back to the schema default
+  rejected 1: failure code 'wibble_unknown' is not mapped for provider 'stripe'
+  rejected 1: payment_method: Input should be 'card', 'upi', 'upi_autopay', ...
+```
+
+Two things in that output matter more than the accept count.
+
+**The defaulted-feature counts.** A real source rarely has `previous_success_rate` or
+`customer_tenure`. Falling back to the schema default is reasonable; doing it invisibly
+degrades every score with no trace, so the count is part of the report rather than a
+footnote. Nine of ten features defaulting means the model is running on `amount` and
+`failure_code` alone, and you should know that before reading its output.
+
+**The rejects are the useful half.** A row that does not map is a row a person needs to
+classify, not a row to drop quietly.
+
+### Known limits
+
+`fetchmany(limit)` caps a fetch; there is no cursor-based paging, so this reads a working
+set rather than streaming a large table. Postgres is the tested engine - the adapter takes
+a connection factory, so another driver is an injection rather than a rewrite, but nothing
+else has been exercised. And the SQL guard is a keyword check over a statement you control;
+it is a guard against mistakes in a mapping file, not a sandbox for hostile input.
+
 ## Safety and guardrails
 
 All 17 policy rules live in one file and each has a dedicated test. A meta-test
@@ -350,6 +525,45 @@ All 17 policy rules live in one file and each has a dedicated test. A meta-test
 | Channel consent | `R-CHANNEL` | contact on the customer's stated preferred channel |
 | Terminal case | `R-TERMINAL` | automatic stop after success - a closed case takes no action |
 | Dead address | `R-DLQ` | a channel that hard-bounces repeatedly is quarantined; no further contact goes out on it |
+
+### HUMAN_REVIEW: the fourth verdict
+
+The gate used to return three verdicts. It now returns four, and only two of them permit
+execution:
+
+```
+APPROVE · MODIFY   →  executes
+HUMAN_REVIEW       →  withheld; a task appears in an operator's queue
+REJECT             →  refused; the case may try a different route
+```
+
+`R-AMOUNT-CAP` moved from REJECT to HUMAN_REVIEW, and the reason is worth stating: a flat
+refusal *dropped the most valuable cases in the queue*, so the system's safety limit was
+also its biggest revenue leak. The rule's message always said "human approval required";
+now the decision does too. Nothing executes on the verdict either way (`allowed` is
+False), so the safety property is unchanged and the business outcome is not.
+
+Four other rules route to a person: a diagnosis below the confidence floor, a processor
+code that could not be mapped at all, repeated execution failures on one case, and a
+customer who has asked for support.
+
+Approving does **not** execute. It records an override (actor, role, timestamp, and a
+mandatory reason) and returns the `PolicyResult` that permits the action. The executor
+still requires a permitting verdict, so an operator's approval reaches the rails through
+the same single gate as everything else rather than through a side door.
+
+A resolved task cannot be re-decided; otherwise two operators can disagree and the last
+writer silently wins. Tasks expire after an SLA, because an unbounded queue is not a
+safety mechanism; it is where decisions go to be forgotten.
+
+### Consent is a rule, not a term in the objective
+
+`R-OPT-OUT` refuses every customer-facing action for a customer who has withdrawn consent,
+at any value, regardless of expected profit. It is a hard rule precisely so that no
+optimisation can outbid it: a *term* in an objective function can be outweighed by a large
+enough number, and this one must not be. A blanket opt-out beats any per-channel record.
+Someone who said "stop contacting me" has not agreed to be reached on a channel they did
+not name. A retry of an existing mandate is not a customer contact and is unaffected.
 
 ### Proving the gate actually works
 
@@ -716,6 +930,157 @@ budget unspent.
 
 ---
 
+## Multi-seed results
+
+**Simulation result.** 20 independent seeds, all 1,842 held-out cases, `default` scenario.
+Produced by `scripts/run_multiseed.py`; the artefact is `data/runs/multiseed.json` and
+carries its provenance, git commit and config fingerprint.
+
+```
+arm               mean recovered            95% CI    worst seed  retries  contacts  risk    ROI
+control                   49,356   [45,508 .. 53,204]     37,999        0         0     0      -
+naive_retry              106,006  [101,156 ..110,855]     85,498    4,616         0   396    614x
+smart_retry              104,477  [100,300 ..108,654]     90,009    2,506         0     0  1,100x
+ml_probability            76,143   [70,956 .. 81,331]     53,466    1,323       446     0    605x
+expected_value            95,979   [90,411 ..101,548]     72,191    1,323       479     0  1,022x
+uplift                    98,297   [92,840 ..103,754]     74,238    1,323       496     0  1,057x
+RecoverAI                128,717  [124,888 ..132,547]    115,720    2,649     1,536     0    179x
+
+INCREMENTAL vs no-touch control          mean            95% CI      seeds won
+  naive_retry                          56,650  [51,554 .. 61,745]        20/20
+  smart_retry                          55,121  [50,650 .. 59,591]        20/20
+  ml_probability                       26,787  [21,500 .. 32,074]        20/20
+  expected_value                       46,623  [40,831 .. 52,415]        20/20
+  uplift                               48,941  [43,112 .. 54,770]        20/20
+  RecoverAI                            79,361  [74,841 .. 83,881]        20/20
+
+RecoverAI paired against each arm, across the same 20 seeds
+  vs control              +79,361  [74,841 .. 83,881]
+  vs naive_retry          +22,712  [18,969 .. 26,454]
+  vs smart_retry          +24,240  [20,991 .. 27,490]
+  vs ml_probability       +52,574  [48,592 .. 56,557]
+  vs expected_value       +32,738  [28,538 .. 36,939]
+  vs uplift               +30,420  [26,295 .. 34,545]
+```
+
+### Three things in this table that are not flattering, and are the point
+
+**Diagnosis does most of the work.** `smart_retry` is a cause-aware retry schedule with
+**no model at all**, a lookup table a competent engineer writes in an afternoon. It
+captures **$55,121** of incremental recovery against RecoverAI's $79,361, or **69% of the
+lift**. Everything else (the calibrated model, the uplift ranking, the agent loop, the
+optional LLM) accounts for the remaining 31% ($24,240, CI $20,991 to $27,490). That gap is
+real and statistically distinguishable from zero, but "the ML is worth 31%" is a far
+smaller claim than the gross figure implies, and it is the one the numbers support.
+
+**RecoverAI has the worst ROI of every arm that acts.** 179× against `smart_retry`'s
+1,100×. It recovers more and spends 8.9× as much doing it, because it contacts customers
+and the retry-only arms do not. Whether that trade is worth taking depends on a merchant's
+real contact costs, which is exactly why they live in `config/economics.yaml` rather than
+in code, and why `--optimizer` exists to refuse contacts that do not pay for themselves.
+
+**Ranking by `P(recover)` is actively bad.** `ml_probability` is the intuitive strategy,
+contact whoever is likeliest to pay, and it is the *worst* acting arm at $26,787
+incremental, well under `expected_value`'s $46,623 on an identical contact budget. It
+spends the budget on people who were going to pay anyway. This is the sure-thing problem
+the uplift work exists to address, reproduced as a measurement rather than asserted as a
+motivation.
+
+Two things RecoverAI wins outright: **zero** automated actions on fraud and compliance
+holds where `naive_retry` takes 396, and a worst seed ($115,720) that still beats every
+other arm's *mean*.
+
+### Does it survive a less flattering world?
+
+8 seeds × 9 scenarios (`scripts/run_multiseed.py --sweep`, `data/runs/multiseed_sweep.json`):
+
+```
+scenario          control    smart  RecovAI   RAI incremental vs control    RAI vs smart_retry
+default            46,790  104,902  128,023   81,233  [72,836 .. 89,630]   +23,121  [15,698..30,544]
+fast_decay         46,790   80,703  100,796   54,006  [48,005 .. 60,007]   +20,093  [12,483..27,704]
+high_fatigue       46,790  104,902  123,449   76,659  [69,307 .. 84,010]   +18,547  [12,138..24,955]
+high_self_cure    101,418  127,721  134,915   33,496  [25,087 .. 41,905]    +7,194   [-458..14,845] n.s.
+low_fatigue        46,790  104,902  132,460   85,670  [77,541 .. 93,799]   +27,558  [19,972..35,144]
+low_self_cure      26,955   96,589  124,739   97,785  [89,239 ..106,330]   +28,151  [19,265..37,036]
+pessimistic        88,208   98,846  100,643   12,435   [6,304 .. 18,567]    +1,798  [-3,426.. 7,021] n.s.
+slow_decay         46,790  130,621  152,388  105,598  [98,590 ..112,606]   +21,767  [15,446..28,088]
+unreliable_rails   46,790  100,792  120,136   73,346  [64,972 .. 81,721]   +19,344  [12,561..26,127]
+```
+
+**RecoverAI beats the untouched control in all nine worlds**, every interval excluding
+zero. But against `smart_retry`, the no-ML arm, the advantage is **not distinguishable
+from zero in two of them**: `high_self_cure` and `pessimistic`. Both are worlds where most
+of the money arrives on its own, and the honest reading is that when the counterfactual is
+high, the marginal contribution of the model over a good lookup table is not something 8
+seeds can resolve. That is reported here rather than left out.
+
+---
+
+## Performance
+
+`scripts/bench_throughput.py`. Single process, one machine, mock rails, deterministic
+planner (LLM latency would hide everything else).
+
+```
+policy engine       10.6 us/call   (94,000 validations/s)
+
+      cases   seconds   cases/s   ms/case   peak RSS
+        100      1.50        67    14.979     196 MB
+      1,000     14.20        70    14.202     247 MB
+     10,000    142.43        70    14.243     717 MB
+     50,000    751.05        67    15.021    1,386 MB
+
+per-case cost across sizes: FLAT (1.05x spread)
+```
+
+**Throughput is flat**, which is the property that matters: nothing here is quadratic, so
+the batch runner is the only thing that would need to change to go faster. At ~70 cases/s
+a 100,000-case queue is about 24 minutes on one core, and the work is embarrassingly
+parallel: `RecoveryAgent.run` holds no cross-case state.
+
+**Memory is not flat, and that is a real limitation.** `run_agent_batch` accumulates every
+`AgentState`, each carrying its full audit-event list, so a 10,000-case batch peaks around
+700 MB. That is fine for the evaluation harness, which wants the states for analysis, and
+it is wrong for a production worker, which should stream outcomes and discard state. The
+fix is a streaming variant of the runner; it is not written, and the figure above is why
+it is on the list rather than assumed away.
+
+Two caveats on the whole table: these are **mock rails**, so a real gateway call (tens to
+hundreds of milliseconds) would dominate the 14 ms per case entirely; and this is one
+process on one machine, not a distributed throughput figure.
+
+---
+
+## The seven-arm ladder
+
+Two arms, a no-touch control and a fixed retry baseline, show that the agent beats
+*doing nothing* and beats *the dumbest possible thing*. Neither shows that its
+intelligence is what does the work, because almost anything beats a 24-hour retry loop.
+
+Five more arms were added so each ingredient can be priced separately:
+
+| # | Arm | What it adds | Prices |
+|---|---|---|---|
+| 1 | `control` | nothing | what arrives on its own |
+| 2 | `naive_retry` | fixed 24h × 3, everyone | the untuned dunning system |
+| 3 | `smart_retry` | cause-aware timing, **no model** | **diagnosis** |
+| 4 | `ml_probability` | contact the likeliest to pay | prediction |
+| 5 | `expected_value` | rank by `amount × P(recover)` | ranking by money |
+| 6 | `uplift` | rank by `amount × uplift(x)` | causal targeting |
+| 7 | `recoverai` | the full loop | the whole thing |
+
+**Arm 3 is the one to read.** It has all the domain knowledge and none of the machine
+learning, so whatever it recovers is the part of the lift a competent engineer could have
+written as a lookup table. Only the gap above *that* line is attributable to the model.
+Arms 4 to 6 share a contact budget, so "targeted better" cannot secretly mean "contacted
+more". Each arm gets a freshly constructed, identically seeded gateway. Sharing one would
+let an earlier arm's contact fatigue leak into a later one and make arm order part of the
+result.
+
+Run it: `python scripts/run_multiseed.py --seeds 20`.
+
+---
+
 ## Baseline vs RecoverAI
 
 Three arms over one population:
@@ -751,7 +1116,7 @@ money that arrived while it waited.
 paired-bootstrap interval $74,145 to $123,000.**
 
 Against the baseline specifically, the agent adds **$36,824** of gross recovery (+34.3%,
-90% CI $10,393–$62,276) on 43% fewer retries.
+90% CI $10,393 to $62,276) on 43% fewer retries.
 
 ### Where the gain comes from
 
@@ -803,22 +1168,138 @@ Diagnosis is what pays, not effort.
 ## Project layout
 
 ```
+backend/app/domain/      money (exact, minor units) · case state machine · events · provenance
 backend/app/models/      enums (the failure taxonomy), Pydantic schemas, API schemas
-backend/app/ml/          feature engineering · serving scorer · uplift · targeting
-backend/app/policies/    17 deterministic rules, one function each, stable IDs
+backend/app/adapters/    PaymentRail protocol · mock rail · sandbox rails · processor codes
+backend/app/decision/    cost model (config/economics.yaml) · expected-incremental-profit
+backend/app/ml/          features · scorer · uplift · targeting · registry · drift
+backend/app/policies/    22 deterministic rules (14 reject · 5 review · 3 modify) + a
+                         version hash derived from the rules' own source
 backend/app/agents/      diagnosis · strategy · bounded LLM planner · redaction · LangGraph
 backend/app/tools/       the action executor - the only source of side effects
-backend/app/audit/       append-only hash-chained log
-backend/app/database/    persistence - SQLite or Postgres · migrations · operational state
-backend/app/services/    control arm, baseline strategy, shared metrics, data loading
-backend/tests/           291 tests (unit, adversarial safety, regression, API, integration,
-                         Postgres round-trip)
+backend/app/security/    auth · roles · HS256 tokens · webhook verification · rate limiting
+backend/app/observability/  Prometheus registry · structured logging with redaction
+backend/app/experiments/ deterministic randomisation · intervals · multi-seed aggregation
+backend/app/audit/       append-only hash-chained log, versioned payload
+backend/app/database/    SQLite or Postgres · migrations · operational state · review queue
+backend/app/services/    control · baselines · the seven-arm suite · shared metrics
+backend/app/api/         auth dependencies · review router · ops router
+backend/app/profiles.py  five deployment profiles; production refuses to boot misconfigured
+backend/tests/           582 tests; 572 run fully offline, 10 skip without Postgres or
+                         Ollama. Unit · policy (one per rule) · security · tenancy ·
+                         chaos/failure-injection · statistical · API · Postgres round-trip
 ml/                      train.py · train_real.py · train_uplift.py · evaluate.py · model/
-simulation/              payment_gateway.py · notification_service.py
-scripts/                 generate_dataset.py · run_experiment.py · demo.py ·
-                         migrate_to_postgres.py · build_real_dataset.py
-frontend/                React + Vite dashboard (6 pages, hand-rolled charts, no chart lib)
-.github/workflows/       CI: offline suite · Postgres suite · pipeline smoke · frontend build
+simulation/              config.py (nine scenarios) · payment_gateway.py · notification_service.py
+scripts/                 generate_dataset · run_experiment · run_multiseed · verify_audit ·
+                         bench_throughput · bench_planner · demo · migrate_to_postgres ·
+                         build_real_dataset
+config/                  simulation.yaml · economics.yaml · effects.yaml
+docs/                    architecture · policy_engine · ml · causal_inference ·
+                         experiments · security · threat_model · production
+frontend/                React + Vite dashboard (7 pages incl. human review, hand-rolled
+                         charts, no chart lib)
+.github/workflows/       CI: lint+types · offline suite · Postgres · security · pipeline ·
+                         multi-seed smoke · audit verification · frontend · docker
 ```
 
 ---
+
+## Known limitations
+
+**Simulated, and honest about it.** The payment rails and messaging channels are mocks.
+Outcomes are sampled from a model with hidden latents, seeded per case - reproducible and
+genuinely comparable across strategies, but no real money moved. The channel adapters sit
+behind an interface; wiring a sandbox is an adapter swap.
+
+**The dataset is synthetic.** It is drawn from an explicit generative model, so the
+*structure* the agent exploits (cause × timing interaction, dead instruments, contact
+fatigue) is real structure - but it is structure I specified. On production data the
+coefficients would differ and the strategy would need re-tuning. The Bayes-ceiling
+comparison is only meaningful *within* this generator.
+
+**Modelled delivery failure penalises the agent arm only.** Hard bounces are simulated at a
+6% address-level rate, and the baseline arm sends *zero* customer contacts - it only
+retries. So the failure mode costs RecoverAI ~$1,078 of gross recovery and costs the
+baseline nothing. That is realistic but **not neutral**: it narrows the measured gap by
+making the agent's world harder while leaving the baseline's untouched. Set
+`RECOVERAI_DELIVERY_FAILURE_RATE=0` to reproduce the pre-DLQ numbers.
+
+**The comparison is against one baseline.** "Retry every 24h, max 3" is real and common,
+but a well-tuned commercial dunning tool would be a harder opponent.
+
+**Escalation forfeits passive recovery, which understates the agent.** Escalating a case
+closes it in our accounting, so it can no longer be credited with a later self-cure. On
+risk/compliance cases the control arm collects $87 that the agent records as $0. The
+artifact is small and runs *against* the agent, so it is left in rather than corrected into
+a flattering direction.
+
+**The self-cure rates are assumed, not measured.** `PASSIVE_CURE_RATE` encodes plausible
+spontaneous-recovery rates per failure cause (26% for a bank timeout, 1% for a closed
+account). The *shape* is defensible; the levels are estimates. Since the causal headline is
+`agent − control`, a systematically wrong control rate moves that number directly. On real
+data this is the first thing to calibrate.
+
+**Confidence intervals now cover seeds as well as resampling.** The single-run figures
+above carry a paired bootstrap interval over cases, which captures sampling variation
+within one world. `scripts/run_multiseed.py` adds the other half: the same comparison
+across independent seeds and across nine simulator scenarios, reported with a
+t-distribution interval and, deliberately, the **worst seed** next to the mean. At low
+seed counts several arm comparisons are *not distinguishable from zero*, and the harness
+says so in the row rather than quoting the point estimate.
+
+**Currency handling is simplified.** A static FX table converts to USD for aggregation; real
+FX, rounding, and settlement timing are out of scope.
+
+**The winning model is linear.** Training selects on validation, so the pipeline is honest
+about this, but the "hybrid ML + rules + LLM" architecture is currently carrying a logistic
+regression on the synthetic track. On real data the tree model wins decisively.
+
+**The value floor is conservative.** `MIN_EXPECTED_RECOVERY_USD` is $1.00 against a
+payment-link cost of $0.04 - a 25× margin. It correctly declines tiny cases, but on
+unreachable accounts it leaves roughly two thirds of them unworked. Tuning the floor to the
+*marginal* value of the specific action is the obvious next win.
+
+**Authentication and multi-tenancy now exist, and have not been audited.** API keys and
+HS256 JWTs, five roles enforced by capability, tenant taken from the credential and never
+from the request, `tenant_id` in the primary key, nine isolation tests. The anonymous
+principal granted in the development profile holds read roles only and can never execute
+an action. What is still missing: encryption at rest, key rotation and expiry, dual
+control on high-value approvals, and any review by someone other than the authors. See
+`docs/threat_model.md` for the ten threats and which eight remain open.
+
+**Temporal validation is not possible as built.** The synthetic dataset has no event
+timestamp, only `days_since_failure`, which is a duration, not a point in time. Splits
+are grouped by customer, which prevents customer leakage but not temporal leakage, and
+cannot detect a model that has learned a regime that no longer holds. Closing this needs
+an `occurred_at` column and a time-ordered split. Stated rather than glossed over
+(`docs/ml.md`).
+
+**Per-action effect sizes are priors, not measurements.** `config/effects.yaml` says how
+much of an intervention's effect each action captures for each cause. No randomised
+multi-armed experiment exists in this project, so these are informed guesses in a file
+where they can be argued with. Every estimate derived from them is labelled
+`CONFIGURED_PRIOR`, and `EffectEstimate.is_measured` is False for all of them. The zeros
+are the exception: those are structural claims about the payment rails (you cannot debit
+a closed account), not statistical ones.
+
+**The event bus, gateway and rate limiter are in-process.** The bus is synchronous and
+ordered; the rate limiter is per-process, so *N* replicas allow *N* times the configured
+rate. Both are protocols with one implementation, and `bus_from_env` raises on an unknown
+URL rather than silently downgrading, but neither is a distributed guarantee, and this
+document does not claim one.
+
+**Next**, in order of what would change a conclusion:
+
+1. **A sandbox integration against one real rail.** The `PaymentRail` protocol is the seam
+   and `StripeSandboxRail` shows the shape; what is missing is a full cycle against a real
+   provider's test mode, including an ambiguous call whose response is lost, to exercise
+   the idempotency path for real.
+2. **A live holdout.** Without a randomly assigned fraction that receives nothing, no
+   causal claim about real customers is available at any confidence.
+3. **Multi-armed randomisation** across retry / email / SMS / payment link / support. That
+   is the only thing that would replace `config/effects.yaml`'s priors with measurements.
+4. **Event timestamps in the schema**, so validation can be temporal rather than grouped.
+5. **Encryption at rest and key lifecycle**: the two largest open security gaps.
+6. **A live Claude A/B** (`--planner llm`) to test whether the LLM beats the rules planner
+   on the cases where the error code lies. The benchmark harness exists
+   (`scripts/bench_planner.py`); the comparison has not been run at scale.

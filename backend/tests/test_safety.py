@@ -13,7 +13,11 @@ import pytest
 from backend.app.agents.graph import RecoveryAgent
 from backend.app.config import MAX_AGENT_STEPS, MAX_AUTO_RECOVERY_AMOUNT_USD, MAX_RETRIES
 from backend.app.models.enums import (
-    CaseStatus, Channel, FailureCategory, InterventionType, category_of,
+    CaseStatus,
+    Channel,
+    FailureCategory,
+    InterventionType,
+    category_of,
 )
 from backend.app.models.schemas import Diagnosis, ProposedAction
 from backend.app.services.dataio import load_split, to_transactions

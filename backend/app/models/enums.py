@@ -115,6 +115,34 @@ class PolicyDecision(str, Enum):
     APPROVE = "approve"
     MODIFY = "modify"
     REJECT = "reject"
+    #: Not refused, but not automatable either -- an authorised human must approve the
+    #: action before it can run. Distinct from REJECT on purpose: rejecting a $50,000
+    #: recovery silently drops the most valuable case in the queue, which is a business
+    #: failure dressed up as a safety win. Nothing executes on this verdict, so the
+    #: system still fails closed.
+    HUMAN_REVIEW = "human_review"
+
+
+#: Verdicts under which the executor may run something. HUMAN_REVIEW is deliberately
+#: absent: it is a *pending* decision, and an unapproved action is an unsafe one.
+EXECUTABLE_DECISIONS = frozenset({PolicyDecision.APPROVE, PolicyDecision.MODIFY})
+
+
+class ReviewStatus(str, Enum):
+    """Lifecycle of one human-review task."""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class Role(str, Enum):
+    """Who may do what. Enforced in the backend; the frontend only hides buttons."""
+    ADMIN = "admin"          # configure policy, manage keys
+    OPERATOR = "operator"    # approve/reject human-review tasks, release DLQ entries
+    ANALYST = "analyst"      # read experiments, metrics, queue
+    AUDITOR = "auditor"      # read audit log and overrides, nothing else
+    SYSTEM = "system"        # execute approved actions; no interactive powers
 
 
 class CaseStatus(str, Enum):

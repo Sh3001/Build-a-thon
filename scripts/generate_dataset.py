@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from backend.app.config import DATA_PROCESSED, DATA_RAW, FX_TO_USD, N_RECORDS, SEED
-from backend.app.models.enums import FailureCategory, FailureCode, category_of
+from backend.app.models.enums import FailureCategory, category_of
 
 COUNTRIES = ["US", "IN", "GB", "DE", "SG", "AU"]
 COUNTRY_W = [0.34, 0.30, 0.13, 0.11, 0.07, 0.05]

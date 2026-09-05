@@ -42,6 +42,15 @@ MIN_EXPECTED_RECOVERY_USD = float(os.environ.get("RECOVERAI_MIN_EV", 1.0))
 #: quarantined. Retrying a dead address forever burns budget and, on a real ESP, sender
 #: reputation -- so the pair is parked for human review instead.
 DLQ_FAILURE_THRESHOLD = int(os.environ.get("RECOVERAI_DLQ_THRESHOLD", 3))
+#: Below this diagnosis confidence, no automated action runs -- the case goes to a human.
+#: The floor is a business decision, so it is configuration, not a constant in a rule.
+REVIEW_MIN_DIAGNOSIS_CONFIDENCE = float(os.environ.get("RECOVERAI_REVIEW_MIN_CONFIDENCE", 0.55))
+#: Consecutive executor failures on one case before automated handling is suspended.
+REVIEW_MAX_EXECUTION_FAILURES = int(os.environ.get("RECOVERAI_REVIEW_MAX_FAILURES", 3))
+#: Hours a pending human-review task stays actionable before it expires. An unbounded
+#: queue is not a safety mechanism; it is a place decisions go to be forgotten.
+REVIEW_SLA_HOURS = int(os.environ.get("RECOVERAI_REVIEW_SLA_HOURS", 72))
+
 #: Share of sends that hard-bounce, seeded per (customer, channel) so a given address is
 #: consistently bad rather than randomly bad. 0 disables the failure mode entirely.
 DELIVERY_FAILURE_RATE = float(os.environ.get("RECOVERAI_DELIVERY_FAILURE_RATE", 0.06))

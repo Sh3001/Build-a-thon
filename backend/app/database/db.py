@@ -14,8 +14,9 @@ only genuinely dialect-specific constructs (autoincrement, upsert) are branched.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from backend.app.config import DB_PATH, DB_URL
 

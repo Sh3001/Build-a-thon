@@ -12,7 +12,12 @@ import pandas as pd
 
 from backend.app.config import FX_TO_USD
 from backend.app.models.enums import (
-    Channel, CustomerSegment, FailureCategory, FailureCode, PaymentMethod, category_of,
+    Channel,
+    CustomerSegment,
+    FailureCategory,
+    FailureCode,
+    PaymentMethod,
+    category_of,
 )
 
 NUMERIC = [

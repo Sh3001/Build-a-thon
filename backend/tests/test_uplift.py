@@ -12,7 +12,10 @@ import pytest
 
 from backend.app.config import MODEL_DIR
 from backend.app.ml.uplift import (
-    UpliftModel, qini_coefficient, qini_curve, uplift_at_k,
+    UpliftModel,
+    qini_coefficient,
+    qini_curve,
+    uplift_at_k,
 )
 
 
@@ -180,7 +183,7 @@ def test_trained_project_model_loads_and_scores():
     u = m.predict_uplift(build_features(test))
     assert len(u) == 200
     assert np.isfinite(u).all()
-    assert -1.0 <= u.min() and u.max() <= 1.0
+    assert u.min() >= -1.0 and u.max() <= 1.0
 
 
 # ------------------------------------------------------------------ targeting service

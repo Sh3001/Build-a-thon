@@ -21,13 +21,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.app.audit.store import FIELDS as AUDIT_FIELDS  # noqa: E402
-from backend.app.audit.store import AuditStore  # noqa: E402
-from backend.app.audit.store import schema_for as audit_schema  # noqa: E402
-from backend.app.config import DB_PATH  # noqa: E402
-from backend.app.database.db import POSTGRES, connect  # noqa: E402
-from backend.app.database.store import CASE_NAMES  # noqa: E402
-from backend.app.database.store import schema_for as case_schema  # noqa: E402
+from backend.app.audit.store import FIELDS as AUDIT_FIELDS
+from backend.app.audit.store import AuditStore
+from backend.app.audit.store import schema_for as audit_schema
+from backend.app.config import DB_PATH
+from backend.app.database.db import POSTGRES, connect
+from backend.app.database.store import CASE_NAMES
+from backend.app.database.store import schema_for as case_schema
 
 AUDIT_COLUMNS = ["seq", "prev_hash", "row_hash", *AUDIT_FIELDS]
 BATCH = 2000

@@ -18,14 +18,16 @@ from __future__ import annotations
 import json
 
 import numpy as np
-import pandas as pd
 
 from backend.app.agents.runner import run_agent_batch
 from backend.app.config import MODEL_DIR, RUN_DIR, SEED
 from backend.app.ml.features import build_features
 from backend.app.ml.scorer import get_scorer
 from backend.app.ml.uplift import (
-    UpliftModel, qini_coefficient, qini_curve, uplift_at_k,
+    UpliftModel,
+    qini_coefficient,
+    qini_curve,
+    uplift_at_k,
 )
 from backend.app.services.control import run_control
 from backend.app.services.dataio import load_split, to_transactions
@@ -120,8 +122,8 @@ def main() -> int:
 
     # ---- the decision that matters: a fixed contact budget --------------------
     # Exact, because the simulator gives both outcomes for every case.
-    print(f"\n  MONEY CAUSED under a fixed contact budget "
-          f"(exact, using the counterfactual)")
+    print("\n  MONEY CAUSED under a fixed contact budget "
+          "(exact, using the counterfactual)")
     print(f"  {'budget':>8}" + "".join(f"{n:>22}" for n in
                                        ("by amount x uplift", "by expected value", "by random")))
     budget_rows = []

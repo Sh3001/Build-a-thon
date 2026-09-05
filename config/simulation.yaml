@@ -1,0 +1,90 @@
+# Simulator scenarios.
+#
+# `default` reproduces the parameterisation that produced every result in the README.
+# The others exist so a claim can be stress-tested rather than asserted: a finding that
+# holds only under `default` is a finding about `default`.
+#
+# Each scenario overlays the defaults, so listing one key changes one thing. Retry
+# probabilities for dead instruments cannot be raised in any scenario -- the loader
+# refuses -- because "brute force cannot beat diagnosis" is the invariant every
+# comparison here depends on.
+
+scenarios:
+  default:
+    description: the shipped parameterisation; reproduces the published numbers
+
+  high_self_cure:
+    description: >
+      Twice the passive-recovery rate. The adversarial case for any recovery product:
+      most of the money arrives on its own, so gross recovered looks excellent and
+      incremental recovered collapses. If the agent still beats the baseline here, the
+      lift is not an artefact of a low control arm.
+    passive_cure_rate:
+      bank_timeout: 0.52
+      network_error: 0.58
+      processor_unavailable: 0.46
+      temporary_decline: 0.34
+      insufficient_funds: 0.30
+      payment_limit_exceeded: 0.26
+      expired_card: 0.14
+      invalid_payment_method: 0.10
+      multiple_declines: 0.08
+
+  low_self_cure:
+    description: >
+      Half the passive-recovery rate. Flatters every intervention, which is exactly why
+      it is here: a result quoted only under this scenario should be distrusted.
+    passive_cure_rate:
+      bank_timeout: 0.13
+      network_error: 0.15
+      processor_unavailable: 0.12
+      temporary_decline: 0.09
+      insufficient_funds: 0.08
+      payment_limit_exceeded: 0.07
+      expired_card: 0.04
+      invalid_payment_method: 0.03
+
+  high_fatigue:
+    description: >
+      Customers tire of contact far faster. Punishes strategies that spend the contact
+      budget freely and rewards ones that pick a single well-aimed touch.
+    fatigue_range: [0.28, 0.48]
+    reminder_effectiveness: 0.60
+
+  low_fatigue:
+    description: Contact is nearly free in goodwill terms; the naive blast strategy looks best here.
+    fatigue_range: [0.82, 0.95]
+
+  fast_decay:
+    description: >
+      Transient faults close their recovery window in roughly a third of the time.
+      Timing becomes the dominant decision, which is where a diagnosis-driven planner
+      should separate from a fixed 24-hour retry schedule.
+    temporary_decay_per_day: 0.48
+
+  slow_decay:
+    description: Transient windows stay open for weeks; timing matters much less.
+    temporary_decay_per_day: 0.05
+
+  unreliable_rails:
+    description: >
+      Deliveries bounce three times as often and the gateway is intermittently
+      unreachable. Exercises the DLQ, the quarantine rule and the distinction between an
+      outage and a decline.
+    delivery_failure_rate: 0.18
+    gateway_unavailable_rate: 0.05
+
+  pessimistic:
+    description: >
+      Every unfavourable assumption at once -- high self-cure, high fatigue, unreliable
+      rails, fast decay. The floor. A lift that survives this is not a parameterisation
+      artefact.
+    passive_cure_rate:
+      bank_timeout: 0.52
+      network_error: 0.58
+      insufficient_funds: 0.30
+      temporary_decline: 0.34
+    fatigue_range: [0.28, 0.48]
+    reminder_effectiveness: 0.60
+    temporary_decay_per_day: 0.48
+    delivery_failure_rate: 0.18

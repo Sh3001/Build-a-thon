@@ -17,6 +17,12 @@ Design rules, chosen so the evaluation cannot flatter the agent:
    so over-contacting destroys value instead of adding it.
 5. **Deterministic.** Every draw is seeded by (seed, transaction_id, tag, attempt), so a
    run replays exactly and an idempotent retry returns the same answer.
+
+Every coefficient below now lives in `SimulationConfig`, which defaults to exactly these
+values -- so the published results are unchanged -- and can be swapped for a named
+scenario to ask whether a finding survives a less flattering world. The module-level
+tables are kept as the defaults' single source of truth, and as the names existing code
+imports.
 """
 from __future__ import annotations
 
@@ -25,7 +31,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from backend.app.models.enums import FailureCategory, FailureCode, category_of
+from backend.app.models.enums import FailureCategory, category_of
+from simulation.config import SimulationConfig
 
 #: Probability a *bare retry of the unchanged instrument* succeeds, before modifiers.
 BASE_RETRY: dict[str, float] = {
@@ -76,12 +83,20 @@ class GatewayResult:
     detail: str
     probability: float
     amount: float = 0.0
+    #: The rail could not be reached. **Not a decline.** The payment's state is unknown,
+    #: so the caller must re-present under the same idempotency key rather than treat the
+    #: attempt as refused -- collapsing the two is how a five-minute processor blip burns
+    #: a customer's entire retry budget.
+    unavailable: bool = False
 
 
 @dataclass
 class PaymentGateway:
-    """Deterministic mock rail. `seed` fixes the whole world."""
+    """Deterministic mock rail. `seed` fixes the draw; `config` fixes the world."""
     seed: int = 20260822
+    #: The parameterisation. Defaults reproduce the constants above exactly, so an
+    #: existing caller that passes nothing gets the behaviour it always had.
+    config: SimulationConfig = field(default_factory=SimulationConfig)
     _latents: dict[str, CaseLatents] = field(default_factory=dict, repr=False)
     #: transaction_id -> whether the customer has fixed their payment instrument
     _instrument_fixed: dict[str, bool] = field(default_factory=dict, repr=False)
@@ -104,7 +119,7 @@ class PaymentGateway:
                 # Anchored on payment history, but not equal to it.
                 ability_to_pay=float(np.clip(r.beta(2.0 + 4.0 * psr, 2.2), 0.03, 0.98)),
                 responsiveness=float(np.clip(r.beta(2.2, 3.0), 0.05, 0.92)),
-                fatigue=float(r.uniform(0.55, 0.82)),
+                fatigue=float(r.uniform(*self.config.fatigue_range)),
                 method_update_willingness=float(np.clip(r.beta(2.4, 2.4), 0.05, 0.95)),
                 payday_offset=float(r.uniform(-2.0, 2.0)),
             )
@@ -118,16 +133,18 @@ class PaymentGateway:
     def _timing_factor(self, code: str, hours: float, lat: CaseLatents) -> float:
         """Cause-specific decay. Mirrors the structure of the training data without
         sharing its coefficients."""
+        cfg = self.config
         days = hours / 24.0
         cat = category_of(code)
         if cat is FailureCategory.TEMPORARY:
-            return float(np.clip(np.exp(-0.16 * days), 0.05, 1.0))
+            return float(np.clip(np.exp(-cfg.temporary_decay_per_day * days), 0.05, 1.0))
         if code == "insufficient_funds":
-            peak = 6.0 + lat.payday_offset          # payday lands in the first week
-            return float(np.clip(1.0 - 0.055 * abs(days - peak), 0.25, 1.0) * 1.35)
+            peak = cfg.payday_peak_days + lat.payday_offset   # payday lands in the first week
+            return float(np.clip(1.0 - cfg.payday_falloff_per_day * abs(days - peak),
+                                 0.25, 1.0) * cfg.payday_boost)
         if cat is FailureCategory.CUSTOMER_ACTION:
-            return float(np.clip(np.exp(-0.02 * days), 0.4, 1.0))
-        return float(np.clip(np.exp(-0.05 * days), 0.2, 1.0))
+            return float(np.clip(np.exp(-cfg.customer_action_decay_per_day * days), 0.4, 1.0))
+        return float(np.clip(np.exp(-cfg.persistent_decay_per_day * days), 0.2, 1.0))
 
     # ------------------------------------------------------------------ tools
     def retry_payment(self, txn: dict, hours_since_failure: float, attempt: int) -> GatewayResult:
@@ -137,16 +154,25 @@ class PaymentGateway:
         lat = self.latents(txn)
         fixed = self._instrument_fixed.get(tid, False)
 
+        cfg = self.config
+        # An outage is drawn before anything else, from its own RNG stream, so switching
+        # it on in a scenario does not shift the draws that decide every other outcome --
+        # otherwise `unreliable_rails` would differ from `default` for two reasons at once
+        # and the comparison would measure both.
+        if cfg.gateway_unavailable_rate > 0.0 and \
+                self._rng(tid, "outage", attempt).random() < cfg.gateway_unavailable_rate:
+            return GatewayResult(False, f"{code}: gateway unreachable; payment state unknown",
+                                 0.0, unavailable=True)
         if code in ("expired_card", "invalid_payment_method") and not fixed:
             return GatewayResult(False, f"{code}: instrument unchanged, retry cannot succeed", 0.0)
-        if BASE_RETRY[code] <= 0.0 and not fixed:
+        if cfg.base_retry[code] <= 0.0 and not fixed:
             return GatewayResult(False, f"{code}: not recoverable by retry", 0.0)
-        base = 0.58 if fixed else BASE_RETRY[code]
+        base = cfg.repaired_instrument_retry if fixed else cfg.base_retry[code]
 
         p = base * self._timing_factor(code, hours_since_failure, lat)
         p *= 0.45 + 0.85 * lat.ability_to_pay
-        p *= 0.88 ** max(0, attempt - 1)            # each re-presentment is worth less
-        p *= 0.90 ** max(0, int(txn.get("failure_count", 1)) - 1)
+        p *= cfg.retry_attempt_decay ** max(0, attempt - 1)   # each re-presentment is worth less
+        p *= cfg.failure_count_decay ** max(0, int(txn.get("failure_count", 1)) - 1)
         p = float(np.clip(p, 0.0, 0.95))
 
         ok = bool(self._rng(tid, "retry", attempt).random() < p)
@@ -162,10 +188,12 @@ class PaymentGateway:
         if category_of(code) is FailureCategory.RISK_COMPLIANCE:
             return GatewayResult(False, "risk hold: no customer-initiated path offered", 0.0)
 
-        p = CHANNEL_REACH.get(channel, 0.45) * lat.responsiveness * self._fatigue_factor(tid)
+        cfg = self.config
+        p = cfg.channel_reach.get(channel, 0.45) * lat.responsiveness * self._fatigue_factor(tid)
         p *= 0.40 + 0.95 * lat.ability_to_pay
         p *= self._timing_factor(code, hours, lat)
-        p *= 1.25 if code in ("expired_card", "invalid_payment_method") else 1.0
+        p *= cfg.link_boost_dead_instrument \
+            if code in ("expired_card", "invalid_payment_method") else 1.0
         p = float(np.clip(p, 0.0, 0.90))
 
         self._contacts[tid] = self._contacts.get(tid, 0) + 1
@@ -179,13 +207,15 @@ class PaymentGateway:
         self.calls += 1
         tid = txn["transaction_id"]
         lat = self.latents(txn)
-        p = CHANNEL_REACH.get(channel, 0.45) * lat.responsiveness * self._fatigue_factor(tid)
-        p = float(np.clip(p * 0.85, 0.0, 0.85))
+        cfg = self.config
+        p = cfg.channel_reach.get(channel, 0.45) * lat.responsiveness * self._fatigue_factor(tid)
+        p = float(np.clip(p * cfg.reminder_effectiveness, 0.0, 0.85))
         self._contacts[tid] = self._contacts.get(tid, 0) + 1
         ok = bool(self._rng(tid, "reminder", nonce).random() < p)
         if ok:
             # Acknowledged: the customer tops up, improving the next re-presentment.
-            lat.ability_to_pay = float(np.clip(lat.ability_to_pay * 1.25, 0.0, 0.98))
+            lat.ability_to_pay = float(
+                np.clip(lat.ability_to_pay * cfg.reminder_ability_boost, 0.0, 0.98))
         return GatewayResult(ok, f"reminder {'acknowledged' if ok else 'ignored'} (p={p:.3f})", p)
 
     def request_method_update(self, txn: dict, channel: str, nonce: int) -> GatewayResult:
@@ -193,8 +223,10 @@ class PaymentGateway:
         self.calls += 1
         tid = txn["transaction_id"]
         lat = self.latents(txn)
-        p = CHANNEL_REACH.get(channel, 0.45) * lat.method_update_willingness * self._fatigue_factor(tid)
-        p = float(np.clip(p * 1.45, 0.0, 0.88))
+        cfg = self.config
+        p = cfg.channel_reach.get(channel, 0.45) * lat.method_update_willingness \
+            * self._fatigue_factor(tid)
+        p = float(np.clip(p * cfg.method_update_boost, 0.0, 0.88))
         self._contacts[tid] = self._contacts.get(tid, 0) + 1
         ok = bool(self._rng(tid, "update", nonce).random() < p)
         if ok:
@@ -218,12 +250,12 @@ class PaymentGateway:
         r = self._rng(tid, "passive")
         code = txn["failure_code"]
         lat = self.latents(txn)
-        rate = PASSIVE_CURE_RATE.get(code, 0.05) * (0.55 + 0.9 * lat.ability_to_pay)
+        rate = self.config.passive_cure_rate.get(code, 0.05) * (0.55 + 0.9 * lat.ability_to_pay)
 
         cure: float | None = None
         if r.random() < min(rate, 0.95):
             start = float(txn.get("days_since_failure", 0.0)) * 24.0
-            when = start + float(r.exponential(PASSIVE_CURE_MEAN_DAYS * 24.0))
+            when = start + float(r.exponential(self.config.passive_cure_mean_days * 24.0))
             cure = when if when <= horizon_hours else None
         self._self_cure[tid] = cure
         return cure

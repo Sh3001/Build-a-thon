@@ -12,7 +12,7 @@ from backend.app.audit.store import AuditStore
 from backend.app.config import MAX_RETRIES, SEED
 from backend.app.database.store import CaseStore
 from backend.app.ml.scorer import get_scorer
-from backend.app.models.enums import FailureCategory, category_of
+from backend.app.models.enums import FailureCategory
 from backend.app.services.baseline import run_baseline
 from backend.app.services.dataio import load_split, to_transactions
 from backend.app.services.results import compare

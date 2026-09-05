@@ -17,8 +17,13 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    average_precision_score, brier_score_loss, f1_score, precision_recall_curve,
-    precision_score, recall_score, roc_auc_score,
+    average_precision_score,
+    brier_score_loss,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
 )
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -121,7 +126,7 @@ def main() -> int:
     yhat = (pte >= best_thr).astype(int)
     metrics = {
         "source": "UCI default of credit card clients (real)",
-        "n_test": int(len(test)), "test_cure_rate": round(float(yte.mean()), 4),
+        "n_test": len(test), "test_cure_rate": round(float(yte.mean()), 4),
         "algorithm": chosen,
         "candidates": {"xgboost": float(auc_xgb), "logistic": float(auc_lr)},
         "threshold": round(best_thr, 4), "threshold_selected_on": "validation",

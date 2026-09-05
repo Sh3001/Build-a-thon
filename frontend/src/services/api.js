@@ -1,14 +1,34 @@
 const BASE = "";
 
+/**
+ * The API key, when one is configured. Read from localStorage so a local run needs no
+ * setup: in the development profile the backend grants an anonymous read-only principal,
+ * so every page here works with no key at all.
+ *
+ * Note what this cannot do. Sending a key from the browser grants exactly the
+ * capabilities the backend has attached to it; hiding a button in this file grants
+ * nothing and prevents nothing. Every authorisation decision is made server-side, and a
+ * 403 rendered below is the backend refusing, not the frontend deciding.
+ */
+function authHeaders() {
+  try {
+    const key = window.localStorage.getItem("recoverai_api_key");
+    return key ? { "X-API-Key": key } : {};
+  } catch {
+    // Private browsing, or storage disabled. Anonymous is a valid state.
+    return {};
+  }
+}
+
 async function get(path) {
-  const r = await fetch(BASE + path);
+  const r = await fetch(BASE + path, { headers: authHeaders() });
   if (!r.ok) throw new Error(`${path} -> ${r.status} ${await r.text()}`);
   return r.json();
 }
 async function post(path, body) {
   const r = await fetch(BASE + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) throw new Error(`${path} -> ${r.status} ${await r.text()}`);
@@ -38,6 +58,13 @@ export const api = {
   dlqRelease: (customerId, channel) =>
     post(`/api/dlq/release?customer_id=${encodeURIComponent(customerId)}`
          + `&channel=${encodeURIComponent(channel)}`),
+  reviews: (limit = 100) => get(`/api/v1/reviews?limit=${limit}`),
+  reviewStats: () => get("/api/v1/reviews/stats"),
+  reviewApprove: (id, reason) => post(`/api/v1/reviews/${id}/approve`, { reason }),
+  reviewReject: (id, reason) => post(`/api/v1/reviews/${id}/reject`, { reason }),
+  overrides: (limit = 100) => get(`/api/v1/reviews/audit/overrides?limit=${limit}`),
+  policy: () => get("/api/v1/policy"),
+  models: () => get("/api/v1/models"),
   chat: (question, router = "keywords") => post("/api/chat", { question, router }),
   runOne: (id) => post(`/api/recovery/run/${id}`),
   runBatch: (limit) => post("/api/recovery/run", { limit, persist: true }),

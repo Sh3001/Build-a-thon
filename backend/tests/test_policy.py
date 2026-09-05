@@ -10,15 +10,28 @@ from pathlib import Path
 import pytest
 
 from backend.app.config import (
-    MAX_AGENT_STEPS, MAX_AUTO_RECOVERY_AMOUNT_USD, MAX_CONTACTS_PER_CASE, MAX_RETRIES,
-    MIN_RETRY_INTERVAL_HOURS, RECOVERY_HORIZON_DAYS,
+    MAX_AGENT_STEPS,
+    MAX_AUTO_RECOVERY_AMOUNT_USD,
+    MAX_CONTACTS_PER_CASE,
+    MAX_RETRIES,
+    MIN_RETRY_INTERVAL_HOURS,
+    RECOVERY_HORIZON_DAYS,
 )
 from backend.app.models.enums import (
-    CaseStatus, Channel, FailureCode, InterventionType, PolicyDecision,
+    CaseStatus,
+    Channel,
+    FailureCode,
+    InterventionType,
+    PolicyDecision,
 )
 from backend.app.models.schemas import AgentState, ProposedAction, Transaction
 from backend.app.policies.engine import (
-    MODIFY_RULES, REJECT_RULES, PolicyContext, all_rule_ids, validate,
+    MODIFY_RULES,
+    REJECT_RULES,
+    REVIEW_RULES,
+    PolicyContext,
+    all_rule_ids,
+    validate,
 )
 
 
@@ -42,7 +55,12 @@ def test_every_rule_has_a_test():
 
 
 def test_rule_ids_are_unique():
-    assert not (set(REJECT_RULES) & set(MODIFY_RULES))
+    """A rule ID appears in exactly one tier. A duplicate would make an audit row
+    ambiguous about which verdict it recorded."""
+    tiers = [set(REJECT_RULES), set(REVIEW_RULES), set(MODIFY_RULES)]
+    for i, a in enumerate(tiers):
+        for b in tiers[i + 1:]:
+            assert not (a & b), f"rule IDs registered in two tiers: {sorted(a & b)}"
 
 
 def test_validate_never_returns_an_action_when_rejecting():
@@ -124,10 +142,18 @@ def test_R_CAUSE_RETRY_CAP_is_tighter_for_insufficient_funds():
     assert validate(state("bank_timeout", attempt_count=2), act(), PASSING).allowed
 
 
-def test_R_AMOUNT_CAP_blocks_automated_money_movement_above_the_ceiling():
+def test_R_AMOUNT_CAP_routes_large_money_movement_to_a_human():
+    """Above the ceiling the action is withheld, not refused.
+
+    The distinction is the whole point of the review tier. A flat REJECT dropped the most
+    valuable cases in the queue; HUMAN_REVIEW keeps them alive in an operator's queue
+    while still guaranteeing nothing executes without approval -- which is what
+    `not allowed` asserts here.
+    """
     over = MAX_AUTO_RECOVERY_AMOUNT_USD + 1
     r = validate(state("bank_timeout", amount=over), act(), PASSING)
-    assert r.decision is PolicyDecision.REJECT and "R-AMOUNT-CAP" in r.rules_fired
+    assert r.decision is PolicyDecision.HUMAN_REVIEW and "R-AMOUNT-CAP" in r.rules_fired
+    assert not r.allowed and r.needs_review
     assert validate(state("bank_timeout", amount=MAX_AUTO_RECOVERY_AMOUNT_USD - 1), act(), PASSING).allowed
 
 
@@ -252,3 +278,92 @@ def test_dlq_rule_does_not_block_a_retry():
     ctx = PolicyContext(quarantined_channels=frozenset({"email"}), contact_channel="email")
     res = validate(st, action, ctx)
     assert "R-DLQ" not in res.rules_fired
+
+
+# ------------------------------------------------------------------ REVIEW rules
+def test_R_OPT_OUT_blocks_every_contact_channel_at_any_value():
+    """Opt-out is the one limit no expected-profit calculation may outbid, so it is a
+    hard REJECT rather than a term in the objective."""
+    ctx = PolicyContext(hours_since_last_attempt=999.0, customer_opted_out=True)
+    for kind in (InterventionType.SEND_REMINDER, InterventionType.SEND_PAYMENT_LINK,
+                 InterventionType.REQUEST_PAYMENT_METHOD_UPDATE):
+        r = validate(state("insufficient_funds", ev=1e6), act(kind), ctx)
+        assert r.decision is PolicyDecision.REJECT and "R-OPT-OUT" in r.rules_fired
+    # A retry of an existing mandate is not a customer contact and is unaffected.
+    assert validate(state("bank_timeout"), act(), ctx).allowed
+
+
+def test_R_REVIEW_LOW_CONFIDENCE_withholds_action_on_an_uncertain_diagnosis():
+    from backend.app.config import REVIEW_MIN_DIAGNOSIS_CONFIDENCE
+    low = PolicyContext(hours_since_last_attempt=999.0,
+                        diagnosis_confidence=REVIEW_MIN_DIAGNOSIS_CONFIDENCE - 0.01)
+    r = validate(state("bank_timeout"), act(), low)
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-REVIEW-LOW-CONFIDENCE" in r.rules_fired and not r.allowed
+    # Control flow is exempt: "do nothing" is the right response to uncertainty, and
+    # routing it to a human would flood the queue with non-decisions.
+    assert validate(state("bank_timeout"), act(InterventionType.STOP), low).allowed
+
+
+def test_R_REVIEW_UNKNOWN_CAUSE_withholds_action_when_the_code_did_not_map():
+    ctx = PolicyContext(hours_since_last_attempt=999.0, diagnosis_unknown=True)
+    r = validate(state("bank_timeout"), act(), ctx)
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-REVIEW-UNKNOWN-CAUSE" in r.rules_fired
+
+
+def test_R_REVIEW_REPEATED_FAILURE_suspends_automation_after_repeated_errors():
+    from backend.app.config import REVIEW_MAX_EXECUTION_FAILURES
+    ctx = PolicyContext(hours_since_last_attempt=999.0,
+                        consecutive_execution_failures=REVIEW_MAX_EXECUTION_FAILURES)
+    r = validate(state("bank_timeout"), act(), ctx)
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-REVIEW-REPEATED-FAILURE" in r.rules_fired
+
+
+def test_R_REVIEW_SUPPORT_REQUESTED_stops_automating_at_a_customer_who_asked_for_a_person():
+    ctx = PolicyContext(hours_since_last_attempt=999.0, support_requested=True)
+    r = validate(state("insufficient_funds"), act(InterventionType.SEND_REMINDER), ctx)
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-REVIEW-SUPPORT-REQUESTED" in r.rules_fired
+
+
+# ------------------------------------------------------------------ tier ordering
+def test_reject_beats_review():
+    """A fraud hold is refused outright, not queued for a human to approve a retry of."""
+    ctx = PolicyContext(hours_since_last_attempt=999.0, diagnosis_confidence=0.01)
+    r = validate(state("suspected_fraud", amount=1e6), act(), ctx)
+    assert r.decision is PolicyDecision.REJECT
+    assert r.effective_action is None
+
+
+def test_review_beats_modify():
+    """An action a human must approve is not rewritten first -- the operator has to
+    approve the thing that was actually proposed."""
+    r = validate(state("bank_timeout", amount=MAX_AUTO_RECOVERY_AMOUNT_USD + 1), act(),
+                 PolicyContext(hours_since_last_attempt=0.0))
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-COOLDOWN" not in r.rules_fired
+    assert r.effective_action.delay_hours == 0.0
+
+
+def test_human_review_carries_the_action_but_never_permits_it():
+    """The action is exposed so an operator can read it; `allowed` stays False so no
+    caller can mistake "there is an action attached" for "you may run it"."""
+    r = validate(state("bank_timeout", amount=MAX_AUTO_RECOVERY_AMOUNT_USD + 1), act(), PASSING)
+    assert r.effective_action is not None
+    assert not r.allowed
+
+
+def test_a_rule_that_raises_fails_closed_to_human_review(monkeypatch):
+    """A gate that crashes must not become a gate that is bypassed."""
+    from backend.app.policies import engine as eng
+
+    def boom(state, action, ctx):
+        raise RuntimeError("rule exploded")
+
+    monkeypatch.setitem(eng.REJECT_RULES, "R-TEST-BOOM", boom)
+    r = validate(state("bank_timeout"), act(), PASSING)
+    assert r.decision is PolicyDecision.HUMAN_REVIEW
+    assert "R-ENGINE-ERROR" in r.rules_fired
+    assert r.effective_action is None and not r.allowed

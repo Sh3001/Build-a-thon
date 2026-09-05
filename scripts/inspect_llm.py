@@ -26,13 +26,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.app.agents.diagnose import diagnose as rules_diagnose  # noqa: E402
-from backend.app.agents.llm import LLMDiagnosis  # noqa: E402
-from backend.app.agents.ollama import OllamaPlanner  # noqa: E402
-from backend.app.models.enums import FailureCode  # noqa: E402
-from backend.app.models.schemas import AgentState, Transaction  # noqa: E402
-from backend.app.policies.engine import PolicyContext, validate  # noqa: E402
-from backend.app.services.dataio import load_split, to_transactions  # noqa: E402
+from backend.app.agents.diagnose import diagnose as rules_diagnose
+from backend.app.agents.llm import LLMDiagnosis
+from backend.app.agents.ollama import OllamaPlanner
+from backend.app.models.schemas import AgentState, Transaction
+from backend.app.policies.engine import PolicyContext, validate
+from backend.app.services.dataio import load_split, to_transactions
 
 RULE = "-" * 78
 

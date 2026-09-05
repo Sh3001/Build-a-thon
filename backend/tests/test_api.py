@@ -4,8 +4,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.api.deps import get_auth_policy
 from backend.app.config import DB_PATH
 from backend.app.main import app
+from backend.app.models.enums import Role
 
 pytestmark = pytest.mark.skipif(
     not DB_PATH.exists(),
@@ -16,6 +18,22 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(scope="module")
+def system_key():
+    """A credential with `execute:action`.
+
+    The read endpoints work unauthenticated in the development profile; the ones that
+    move money do not, in any profile. That asymmetry is the reason these tests need a
+    key at all, and it is worth stating: the anonymous principal is deliberately granted
+    ANALYST and AUDITOR only, so an open dashboard can never trigger a recovery.
+    """
+    policy = get_auth_policy()
+    policy.add_key("test_system", "test-secret", "default", [Role.SYSTEM],
+                   label="pytest")
+    yield {"X-API-Key": "test_system.test-secret"}
+    policy.keys.pop("test_system", None)
 
 
 def test_health(client):
@@ -124,9 +142,9 @@ def test_agent_beats_baseline_through_the_api(client):
     assert m["recoverai"]["total_retries"] < m["baseline"]["total_retries"]
 
 
-def test_run_one_case_live(client):
+def test_run_one_case_live(client, system_key):
     tid = client.get("/api/recovery-queue?limit=1").json()[0]["transaction_id"]
-    r = client.post(f"/api/recovery/run/{tid}")
+    r = client.post(f"/api/recovery/run/{tid}", headers=system_key)
     assert r.status_code == 200
     d = r.json()
     assert d["transaction_id"] == tid
@@ -135,14 +153,23 @@ def test_run_one_case_live(client):
     assert d["stop_reason"]
 
 
-def test_run_batch_live(client):
-    r = client.post("/api/recovery/run", json={"limit": 25, "persist": False})
+def test_running_a_recovery_requires_a_credential(client):
+    """The route that moves money is closed to the anonymous principal even in the
+    development profile. An open dashboard must never be able to trigger a recovery."""
+    assert client.post("/api/recovery/run", json={"limit": 1}).status_code == 403
+
+
+def test_run_batch_live(client, system_key):
+    r = client.post("/api/recovery/run", json={"limit": 25, "persist": False},
+                    headers=system_key)
     assert r.status_code == 200
     d = r.json()
     assert d["cases_processed"] == 25
     assert d["summary"]["risk_actions_taken"] == 0
 
 
-def test_run_rejects_an_out_of_range_limit(client):
-    assert client.post("/api/recovery/run", json={"limit": 99999}).status_code == 422
-    assert client.post("/api/recovery/run", json={"limit": 0}).status_code == 422
+def test_run_rejects_an_out_of_range_limit(client, system_key):
+    assert client.post("/api/recovery/run", json={"limit": 99999},
+                       headers=system_key).status_code == 422
+    assert client.post("/api/recovery/run", json={"limit": 0},
+                       headers=system_key).status_code == 422

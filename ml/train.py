@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import joblib
 import numpy as np
@@ -25,7 +25,30 @@ from xgboost import XGBClassifier
 
 from backend.app.config import MODEL_DIR, SEED
 from backend.app.ml.features import build_features, feature_names
+from backend.app.ml.registry import ModelRegistry
 from backend.app.services.dataio import load_split
+
+
+def _dataset_hash(df) -> str:
+    """Content hash of the training rows, so "which data produced this model" is
+    answerable from the registry alone rather than from whoever remembers."""
+    import hashlib
+    return hashlib.sha256(
+        pd_to_bytes(df)).hexdigest()[:16]
+
+
+def pd_to_bytes(df) -> bytes:
+    return df.to_csv(index=False).encode()
+
+
+def _git_commit() -> str:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 MODEL_VERSION = "xgb-recovery-v1"
 
@@ -117,10 +140,10 @@ def main() -> int:
         "algorithm_selected_on": "validation ROC-AUC",
         "candidates": {"xgboost": float(roc_auc_score(ycal, clf.predict_proba(Xcal)[:, 1])),
                        "logistic": float(lr_auc)},
-        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_at": datetime.now(UTC).isoformat(),
         "seed": a.seed,
-        "n_train": int(len(train)),
-        "n_val": int(len(val)),
+        "n_train": len(train),
+        "n_val": len(val),
         "best_iteration": int(clf.best_iteration),
         "features": feature_names(),
         "params": {"n_estimators": a.n_estimators, "max_depth": a.max_depth,
@@ -130,6 +153,23 @@ def main() -> int:
         "top_features": [{"feature": f, "importance": float(v)} for f, v in imp[:15]],
     }
     (MODEL_DIR / "metadata.json").write_text(json.dumps(meta, indent=2))
+
+    # Register an immutable copy. Training used to overwrite the artefacts in place, so
+    # the model that produced last week's numbers no longer existed and a result could
+    # not be reproduced. The registry keeps every version; promotion to PRODUCTION is a
+    # separate, gated act, so training a model does not put it in front of customers.
+    record = ModelRegistry().register(
+        "recovery", MODEL_DIR,
+        metrics={"roc_auc": float(v_auc), "pr_auc": float(v_ap), "brier": float(v_brier)},
+        features=feature_names(), algorithm=chosen,
+        params=meta["params"], seed=a.seed,
+        training_data_hash=_dataset_hash(train),
+        training_dataset_version=f"{len(train)}rows",
+        git_commit=_git_commit(),
+        notes="selected on validation ROC-AUC over {'xgboost', 'logistic'}")
+    print(f"  registered  {record.version}  (status {record.status})")
+    print(f"              promote with: ModelRegistry().transition('{record.version}', "
+          f"ModelStatus.STAGING) then .promote(...)")
 
     print(f"\n  top features ({chosen})")
     for f, v in imp[:10]:

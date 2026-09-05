@@ -1,10 +1,18 @@
 """Phase 7 -- case and run persistence. The API reads a completed run from here rather
-than recomputing it, so the dashboard and the evaluation always agree."""
+than recomputing it, so the dashboard and the evaluation always agree.
+
+**Tenancy is enforced here, not by callers.** Every read and every write carries the
+store's `tenant_id`, and there is no method that omits it. That is the shape that makes
+isolation testable: a caller cannot forget a WHERE clause it never writes, and a new
+query added to this class inherits the scoping from the constructor. The alternative --
+passing a tenant into each call site -- fails the first time someone adds a method.
+"""
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
+from datetime import UTC
 from pathlib import Path
-from typing import Iterable
 
 from backend.app.config import DB_PATH, DB_URL
 from backend.app.database.db import POSTGRES, Connection, connect
@@ -64,10 +72,16 @@ def _migrate(conn) -> None:
     migrate(conn)
 
 
+#: The tenant a single-tenant deployment writes under. Existing rows adopt it in
+#: migration 005, so nothing about a local run changes.
+DEFAULT_TENANT = "default"
+
+
 class CaseStore:
     def __init__(self, path: Path | str = DB_PATH, conn: Connection | None = None,
-                 url: str | None = DB_URL):
+                 url: str | None = DB_URL, tenant_id: str = DEFAULT_TENANT):
         self.conn = conn or connect(path, url)
+        self.tenant_id = tenant_id
         _migrate(self.conn)
 
     # ------------------------------------------------------------------ write
@@ -88,30 +102,38 @@ class CaseStore:
                 o.contacts, json.dumps(o.actions), o.cost, o.stop_reason,
                 int(o.escalated), o.policy_blocked, o.risk_actions,
             ))
+        rows = [(self.tenant_id, *r) for r in rows]
         self.conn.executemany(
-            upsert_sql(self.conn.dialect, "cases", CASE_NAMES, CASE_KEYS), rows)
+            upsert_sql(self.conn.dialect, "cases", ["tenant_id", *CASE_NAMES],
+                       ("tenant_id", *CASE_KEYS)), rows)
         self.conn.commit()
         return len(rows)
 
     def save_run(self, key: str, payload: dict) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
         self.conn.execute(
-            upsert_sql(self.conn.dialect, "runs", ["key", "created_at", "payload"], ("key",)),
-            (key, datetime.now(timezone.utc).isoformat(), json.dumps(payload, default=str)))
+            upsert_sql(self.conn.dialect, "runs", ["tenant_id", "key", "created_at", "payload"],
+                       ("tenant_id", "key")),
+            (self.tenant_id, key, datetime.now(UTC).isoformat(),
+             json.dumps(payload, default=str)))
         self.conn.commit()
 
     # ------------------------------------------------------------------ read
     def get_run(self, key: str) -> dict | None:
-        row = self.conn.execute("SELECT payload FROM runs WHERE key = ?", (key,)).fetchone()
+        row = self.conn.execute(
+            "SELECT payload FROM runs WHERE tenant_id = ? AND key = ?",
+            (self.tenant_id, key)).fetchone()
         return json.loads(row["payload"]) if row else None
 
     def list_runs(self) -> list[str]:
-        return [r["key"] for r in self.conn.execute("SELECT key FROM runs ORDER BY created_at DESC")]
+        return [r["key"] for r in self.conn.execute(
+            "SELECT key FROM runs WHERE tenant_id = ? ORDER BY created_at DESC",
+            (self.tenant_id,))]
 
     def get_case(self, transaction_id: str, strategy: str = "recoverai") -> dict | None:
         row = self.conn.execute(
-            "SELECT * FROM cases WHERE transaction_id = ? AND strategy = ?",
-            (transaction_id, strategy)).fetchone()
+            "SELECT * FROM cases WHERE tenant_id = ? AND transaction_id = ? AND strategy = ?",
+            (self.tenant_id, transaction_id, strategy)).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -125,8 +147,8 @@ class CaseStore:
         allowed = {"expected_recovery", "amount_usd", "recovery_probability",
                    "amount_recovered", "risk_score"}
         col = order_by if order_by in allowed else "expected_recovery"
-        sql = "SELECT * FROM cases WHERE strategy = ?"
-        args: list = [strategy]
+        sql = "SELECT * FROM cases WHERE tenant_id = ? AND strategy = ?"
+        args: list = [self.tenant_id, strategy]
         if status:
             sql += " AND status = ?"
             args.append(status)
@@ -146,7 +168,8 @@ class CaseStore:
 
     def count(self, strategy: str = "recoverai") -> int:
         return int(self.conn.execute(
-            "SELECT COUNT(*) c FROM cases WHERE strategy = ?", (strategy,)).fetchone()["c"])
+            "SELECT COUNT(*) c FROM cases WHERE tenant_id = ? AND strategy = ?",
+            (self.tenant_id, strategy)).fetchone()["c"])
 
     def close(self) -> None:
         self.conn.commit()
