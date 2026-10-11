@@ -27,6 +27,10 @@ from simulation.notification_service import DeliveryFailure, NotificationService
 from simulation.payment_gateway import PaymentGateway
 
 
+class ActionPending(RuntimeError):
+    """Another worker owns this action, or its outcome requires reconciliation."""
+
+
 class PolicyViolation(RuntimeError):
     """Raised when execution is attempted without a valid approval. Should be impossible."""
 
@@ -89,20 +93,33 @@ class ActionExecutor:
         if self.ledger is not None:
             stored = self.ledger.recall(key)
             if stored is not None:
+                self.gateway.restore_case(state.transaction_id, stored.get("_simulator", {}))
                 cached = ActionResult(**stored)
                 self._seen[key] = cached
                 return cached.model_copy(update={"replayed": True})
+
+        if self.ledger is not None and not self.ledger.claim(key, state.transaction_id):
+            stored = self.ledger.recall(key)
+            if stored is not None:
+                self.gateway.restore_case(state.transaction_id, stored.get("_simulator", {}))
+                return ActionResult(**stored).model_copy(update={"replayed": True})
+            raise ActionPending("Action already claimed; reconcile its outcome before retrying")
 
         try:
             result = self._dispatch(state, policy, txn, key)
         except DeliveryFailure as exc:
             result = self._on_bounce(state, action.action, txn, exc, key)
+        except Exception:
+            if self.ledger is not None:
+                self.ledger.uncertain(key)
+            raise
 
         result.cost = self._cost(action.action)
-        self._seen[key] = result
         if self.ledger is not None:
             self.ledger.remember(key, state.transaction_id, action.action.value,
-                                 result.model_dump(mode="json"))
+                                 {**result.model_dump(mode="json"),
+                                  "_simulator": self.gateway.snapshot_case(state.transaction_id)})
+        self._seen[key] = result
         return result
 
     def _on_bounce(self, state: AgentState, kind: InterventionType, txn: dict,

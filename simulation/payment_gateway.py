@@ -278,6 +278,14 @@ class PaymentGateway:
     def contacts(self, txn_id: str) -> int:
         return self._contacts.get(txn_id, 0)
 
+    def snapshot_case(self, txn_id: str) -> dict:
+        return {"contacts": self._contacts.get(txn_id, 0),
+                "instrument_fixed": self._instrument_fixed.get(txn_id, False)}
+
+    def restore_case(self, txn_id: str, snapshot: dict) -> None:
+        self._contacts[txn_id] = int(snapshot.get("contacts", 0))
+        self._instrument_fixed[txn_id] = bool(snapshot.get("instrument_fixed", False))
+
     def reset_case(self, txn_id: str) -> None:
         self._instrument_fixed.pop(txn_id, None)
         self._contacts.pop(txn_id, None)

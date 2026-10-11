@@ -1,7 +1,7 @@
 """Phase 8 -- API response schemas."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,7 +29,7 @@ class OverviewCards(BaseModel):
     revenue_at_risk: float
     revenue_recovered: float
     recovery_rate: float
-    incremental_recovery_vs_baseline: float
+    incremental_recovery_vs_baseline: float | None
     recovery_uplift_pct: float | None = None
     #: 90% paired-bootstrap interval on the incremental figure. Surfaced next to the
     #: point estimate because a lognormal revenue total without one invites over-reading.
@@ -43,9 +43,9 @@ class OverviewCards(BaseModel):
     total_cost: float
     net_recovered: float
     avg_recovery_hours: float | None = None
-    baseline_recovered: float
-    baseline_recovery_rate: float
-    unsafe_actions_prevented: int
+    baseline_recovered: float | None
+    baseline_recovery_rate: float | None
+    unsafe_actions_prevented: int | None
     #: The no-touch counterfactual. `incremental_vs_control` is the causal figure --
     #: revenue that would NOT have arrived had we left every case alone.
     control_recovered: float | None = None
@@ -59,6 +59,9 @@ class OverviewCards(BaseModel):
 
 
 class QueueRow(BaseModel):
+    months_late: int | None = None
+    snapshot_date: str | None = None
+    data_source: str | None = None
     transaction_id: str
     customer_id: str
     amount: float
@@ -104,7 +107,7 @@ class RevenueAtRisk(BaseModel):
 
 class RunRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=5000)
-    split: str = "test"
+    split: Literal["train", "val", "test"] = "test"
     persist: bool = True
 
 

@@ -121,7 +121,7 @@ class AuthPolicy:
         # someone explicitly turns it off, and turning it off is a thing they have to
         # type. Development is open unless someone turns it on.
         configured = e.get("RECOVERAI_AUTH_REQUIRED")
-        required: bool = (profile in ("production", "staging")) if configured is None \
+        required: bool = (profile in ("production", "staging", "readonly")) if configured is None \
             else configured.lower() in ("1", "true", "yes", "on")
 
         secret = e.get("RECOVERAI_JWT_SECRET", "")

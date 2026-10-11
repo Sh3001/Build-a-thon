@@ -155,20 +155,25 @@ class MetricsRegistry:
                     out.append(f"{h.name}_count{_render_labels(lk)} {total}")
         return "\n".join(out) + "\n"
 
-    def snapshot(self) -> dict:
+    def snapshot(self, tenant_id: str | None = None) -> dict:
         """The same data as JSON, for the dashboard, which does not speak Prometheus."""
+        def visible(labels):
+            values = dict(labels)
+            return (tenant_id is None or (values.get("tenant", tenant_id) == tenant_id
+                                         and "principal" not in values))
+
         with self._lock:
             return {
                 "counters": {m.name: {"|".join(f"{k}={v}" for k, v in lk): val
-                                      for lk, val in m.values.items()}
+                                      for lk, val in m.values.items() if visible(lk)}
                              for m in self._counters.values()},
                 "gauges": {m.name: {"|".join(f"{k}={v}" for k, v in lk): val
-                                    for lk, val in m.values.items()}
+                                    for lk, val in m.values.items() if visible(lk)}
                            for m in self._gauges.values()},
                 "histograms": {h.name: {"|".join(f"{k}={v}" for k, v in lk): {
                     "count": h.totals[lk], "sum": round(h.sums[lk], 6),
                     "mean": round(h.sums[lk] / h.totals[lk], 6) if h.totals[lk] else 0.0,
-                } for lk in h.totals} for h in self._histograms.values()},
+                } for lk in h.totals if visible(lk)} for h in self._histograms.values()},
             }
 
     def reset(self) -> None:

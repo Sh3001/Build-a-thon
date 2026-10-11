@@ -60,7 +60,7 @@ def prometheus() -> Response:
 @router.get("/metrics/snapshot")
 def metrics_snapshot(who: Principal = Depends(require("read:metrics"))) -> dict:
     """The same series as JSON, for the dashboard, which does not speak Prometheus."""
-    return get_registry().snapshot()
+    return get_registry().snapshot(tenant_id=who.tenant_id)
 
 
 # ---------------------------------------------------------------- policy
@@ -171,8 +171,9 @@ def dead_letters(who: Principal = Depends(require("read:metrics"))) -> dict:
     tracks bounced customer addresses -- two different failures, two different queues, and
     conflating them would put an unreachable email next to a crashed handler."""
     bus = get_bus()
+    letters = [dl for dl in bus.pending_dead_letters() if dl.event.tenant_id == who.tenant_id]
     return {
-        "stats": bus.stats(),
+        "stats": {"dead_letters": len(letters), "quarantined": sum(dl.quarantined for dl in letters)},
         "entries": [{
             "event_id": dl.event.event_id, "type": dl.event.type.value,
             "transaction_id": dl.event.transaction_id, "handler": dl.handler,
@@ -180,20 +181,20 @@ def dead_letters(who: Principal = Depends(require("read:metrics"))) -> dict:
             "quarantined": dl.quarantined, "quarantine_reason": dl.quarantine_reason,
             "first_failed_at": dl.first_failed_at.isoformat(),
             "last_attempt_at": dl.last_attempt_at.isoformat(),
-        } for dl in bus.pending_dead_letters()],
+        } for dl in letters],
     }
 
 
 @router.post("/dlq/events/retry")
 def retry_dead_letters(who: Principal = Depends(require("write:dlq"))) -> dict:
-    recovered, failing = get_bus().retry_dead_letters()
+    recovered, failing = get_bus().retry_dead_letters(tenant_id=who.tenant_id)
     return {"recovered": recovered, "still_failing": failing,
-            "stats": get_bus().stats()}
+            "stats": dead_letters(who)["stats"]}
 
 
 @router.post("/dlq/events/{event_id}/resolve")
 def resolve_dead_letter(event_id: str,
                         who: Principal = Depends(require("write:dlq"))) -> dict:
-    if not get_bus().resolve(event_id):
+    if not get_bus().resolve(event_id, tenant_id=who.tenant_id):
         raise HTTPException(404, "no unresolved dead letter with that event id")
     return {"event_id": event_id, "resolved": True, "resolved_by": who.subject}

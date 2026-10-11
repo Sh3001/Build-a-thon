@@ -12,6 +12,7 @@ limiting by principal alone leaves the unauthenticated endpoints unprotected.
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -35,7 +36,13 @@ class RateLimiter:
     allowed: int = 0
     blocked: int = 0
 
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
     def check(self, key: str, cost: float = 1.0, now: float | None = None) -> tuple[bool, float]:
+        with self._lock:
+            return self._check(key, cost, now)
+
+    def _check(self, key: str, cost: float = 1.0, now: float | None = None) -> tuple[bool, float]:
         """Returns (allowed, retry_after_seconds)."""
         t = now if now is not None else time.monotonic()
         bucket = self._buckets.get(key)

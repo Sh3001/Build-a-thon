@@ -153,6 +153,7 @@ def main() -> int:
                   f"realised uplift {true_uplift[m].mean():+.1%}  "
                   f"${amount[m].sum():>10,.0f} at risk")
 
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     (RUN_DIR / "uplift_evaluation.json").write_text(json.dumps({
         "n_train": len(train_txns), "n_test": len(test_txns),
         "true_ate": round(float(true_uplift.mean()), 4),

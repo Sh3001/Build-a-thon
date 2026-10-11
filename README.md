@@ -1,4 +1,17 @@
+## Browse UCI data without a database
+
+Run `./run.sh uci` and open http://127.0.0.1:8000. This validates the existing UCI
+spreadsheet (downloads it from UCI if missing) and serves historical account data.
+Build the dashboard first after frontend changes: `cd frontend && npm ci && npm run build`.
+No database or synthetic data is created. See [UCI setup and data interpretation](docs/uci.md).
+
 # RecoverAI - Autonomous AI Revenue Recovery
+
+> **Current startup behavior:** the app opens in database setup mode and does not create a
+> local database or generate demo data. Read [existing database setup](docs/external_database.md)
+> for read-only PostgreSQL ingestion, optional recovery storage, and durable job execution.
+> The experiment/demo instructions below require explicit simulation setup.
+
 
 An agent that works a queue of failed payments end to end: **score, diagnose, choose an
 intervention, execute it under hard limits, monitor, and stop when it should** - measured

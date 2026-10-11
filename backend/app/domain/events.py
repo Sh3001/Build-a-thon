@@ -135,7 +135,7 @@ class InProcessEventBus:
                 event=event, handler=name, error=f"{type(exc).__name__}: {exc}"))
 
     # ------------------------------------------------------------------ DLQ ops
-    def retry_dead_letters(self) -> tuple[int, int]:
+    def retry_dead_letters(self, tenant_id: str | None = None) -> tuple[int, int]:
         """Re-deliver every unresolved dead letter. Returns (recovered, still_failing).
 
         A letter that exceeds `max_attempts` is quarantined rather than retried forever:
@@ -144,6 +144,8 @@ class InProcessEventBus:
         """
         recovered = failing = 0
         for dl in self.dead_letters:
+            if tenant_id is not None and dl.event.tenant_id != tenant_id:
+                continue
             if dl.resolved or dl.quarantined:
                 continue
             handlers = [h for h in self._handlers[dl.event.type]
@@ -164,10 +166,11 @@ class InProcessEventBus:
                         f"failed {dl.attempts} times; deterministic failure assumed")
         return recovered, failing
 
-    def resolve(self, event_id: str) -> bool:
+    def resolve(self, event_id: str, tenant_id: str | None = None) -> bool:
         """Operator marks a dead letter as handled out of band."""
         for dl in self.dead_letters:
-            if dl.event.event_id == event_id and not dl.resolved:
+            if (dl.event.event_id == event_id and not dl.resolved
+                    and (tenant_id is None or dl.event.tenant_id == tenant_id)):
                 dl.resolved = True
                 return True
         return False

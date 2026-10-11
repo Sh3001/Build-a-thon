@@ -13,6 +13,7 @@ env:
   # CI is the `testing` profile: no network, no API key, no LLM. A suite that can call
   # out is a suite whose results depend on someone else's uptime.
   RECOVERAI_PROFILE: testing
+  RECOVERAI_DB: /tmp/recoverai-ci.sqlite
 
 jobs:
   lint:
@@ -137,6 +138,10 @@ jobs:
       - run: npm ci
         working-directory: frontend
       - run: npm run build
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
         working-directory: frontend
 
   docker:

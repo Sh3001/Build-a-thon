@@ -6,11 +6,12 @@ from fastapi.testclient import TestClient
 
 from backend.app.api.deps import get_auth_policy
 from backend.app.config import DB_PATH
+from backend.app.database.db import state_configured
 from backend.app.main import app
 from backend.app.models.enums import Role
 
 pytestmark = pytest.mark.skipif(
-    not DB_PATH.exists(),
+    not state_configured() or not DB_PATH.exists(),
     reason="no experiment database -- run scripts/run_experiment.py first",
 )
 
@@ -41,7 +42,7 @@ def test_health(client):
     assert r.status_code == 200
     d = r.json()
     assert d["status"] == "ok"
-    assert d["audit_chain_valid"] is True, "the audit chain is broken"
+    assert d["audit_chain_valid"] is None, "health must not scan the entire audit chain"
 
 
 def test_overview_cards(client):
@@ -134,10 +135,11 @@ def test_metrics_and_baseline_endpoints(client):
     assert b["risk_actions_taken"] > 0, "baseline should show unsafe actions to contrast against"
 
 
-def test_agent_beats_baseline_through_the_api(client):
-    """The headline claim, asserted on what the API actually serves."""
+def test_comparison_reports_the_measured_difference(client):
+    """A small or different sample may lose; the API must report that honestly."""
     m = client.get("/api/metrics").json()
-    assert m["comparison"]["incremental_recovered_revenue"] > 0
+    assert m["comparison"]["incremental_recovered_revenue"] == pytest.approx(
+        m["recoverai"]["revenue_recovered"] - m["baseline"]["revenue_recovered"], abs=0.02)
     assert m["recoverai"]["risk_actions_taken"] == 0
     assert m["recoverai"]["total_retries"] < m["baseline"]["total_retries"]
 
@@ -145,12 +147,11 @@ def test_agent_beats_baseline_through_the_api(client):
 def test_run_one_case_live(client, system_key):
     tid = client.get("/api/recovery-queue?limit=1").json()[0]["transaction_id"]
     r = client.post(f"/api/recovery/run/{tid}", headers=system_key)
-    assert r.status_code == 200
+    assert r.status_code == 202
     d = r.json()
-    assert d["transaction_id"] == tid
-    assert d["status"] in ("recovered", "escalated", "stopped", "exhausted")
-    assert len(d["steps"]) >= 5
-    assert d["stop_reason"]
+    assert d["payload"]["transaction_id"] == tid
+    assert d["status"] == "queued"
+    assert client.get(f"/api/jobs/{d['job_id']}", headers=system_key).status_code == 200
 
 
 def test_running_a_recovery_requires_a_credential(client):
@@ -162,10 +163,10 @@ def test_running_a_recovery_requires_a_credential(client):
 def test_run_batch_live(client, system_key):
     r = client.post("/api/recovery/run", json={"limit": 25, "persist": False},
                     headers=system_key)
-    assert r.status_code == 200
+    assert r.status_code == 202
     d = r.json()
-    assert d["cases_processed"] == 25
-    assert d["summary"]["risk_actions_taken"] == 0
+    assert d["payload"]["limit"] == 25
+    assert d["status"] == "queued"
 
 
 def test_run_rejects_an_out_of_range_limit(client, system_key):

@@ -15,7 +15,7 @@ from pathlib import Path
 from backend.app.agents.llm import build_planner
 from backend.app.agents.runner import run_agent_batch
 from backend.app.audit.store import AuditStore
-from backend.app.config import DB_PATH, DB_URL, RUN_DIR, SEED
+from backend.app.config import DB_PATH, DB_URL, SEED
 from backend.app.database.operational import ActionLedger, DLQStore
 from backend.app.database.store import CaseStore
 from backend.app.ml.scorer import get_scorer
@@ -163,8 +163,7 @@ def main() -> int:
     # RUN_DIR meant that a scratch run with `--db /tmp/scratch.db` still clobbered the
     # canonical experiment.json -- so a 40-case probe silently replaced the 1,842-case
     # result every dashboard number is quoted from.
-    out_json = (a.db.parent / "experiment.json") if a.db != DB_PATH \
-        else (RUN_DIR / "experiment.json")
+    out_json = a.db.parent / "experiment.json"
     out_json.write_text(json.dumps(
         {"meta": meta, "control": control_report, "baseline": base_report,
          "recoverai": agent_report, "comparison": comparison,

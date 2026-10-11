@@ -7,11 +7,17 @@ unmapped columns, and rows whose failure code nobody has classified.
 """
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from backend.app.models.enums import FailureCode, PaymentMethod
 from backend.app.services.dataio import (
-    DERIVED_FEATURES, OUTCOME_COLUMNS, SqlSource, SqlSourceError, TRANSACTION_FIELDS,
+    DERIVED_FEATURES,
+    OUTCOME_COLUMNS,
+    TRANSACTION_FIELDS,
+    SqlSource,
+    SqlSourceError,
 )
 
 URL = "postgresql://reader:pw@db.internal:5432/payments"
@@ -59,7 +65,7 @@ def test_write_statements_are_refused(sql):
 
 def test_a_write_stacked_behind_a_select_is_refused():
     """Passes the "looks like a select" test and must still be caught."""
-    with pytest.raises(SqlSourceError, match="single statement|read-only"):
+    with pytest.raises(SqlSourceError, match=r"single statement|read-only"):
         SqlSource.check_read_only("SELECT 1; DROP TABLE payments")
 
 
@@ -204,8 +210,8 @@ def test_features_the_source_lacks_are_counted_not_hidden():
 
 
 def test_days_since_failure_is_derived_from_a_timestamp_when_absent():
-    from datetime import datetime, timedelta, timezone
-    when = datetime.now(timezone.utc) - timedelta(days=5)
+    from datetime import datetime, timedelta
+    when = datetime.now(UTC) - timedelta(days=5)
     res = source().build([row(failed_at=when)])
     assert res.transactions[0].days_since_failure == pytest.approx(5.0, abs=0.01)
     assert "days_since_failure" not in res.report.defaulted_features
@@ -352,3 +358,15 @@ def test_a_connection_that_cannot_be_made_read_only_is_refused():
 
     with pytest.raises(SqlSourceError, match="read-only"):
         SqlSource(url=URL, query=QUERY, connect_fn=lambda u: Immutable()).fetch()
+
+
+@pytest.mark.parametrize("amount", [0, -1, float("nan"), float("inf")])
+def test_invalid_source_amount_is_rejected(amount):
+    result = source().build([row(amount=amount)])
+    assert result.report.rejected == 1
+    assert not result.transactions
+
+
+def test_unknown_currency_is_not_assumed_to_be_usd():
+    result = source().build([row(currency="XYZ")])
+    assert result.report.rejected == 1

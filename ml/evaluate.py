@@ -22,6 +22,7 @@ from sklearn.metrics import (
 )
 
 from backend.app.config import MODEL_DIR, RUN_DIR
+from backend.app.ml.drift import expected_calibration_error
 from backend.app.ml.scorer import get_scorer
 from backend.app.models.enums import category_of
 from backend.app.services.dataio import load_split
@@ -118,12 +119,15 @@ def main() -> int:
                 "n": int(m.sum()),
                 "actual_rate": round(float(y[m].mean()), 4),
                 "predicted_rate": round(float(p[m].mean()), 4),
+                "brier": round(float(brier_score_loss(y[m], p[m])), 4),
+                "calibration_error": round(expected_calibration_error(y[m], p[m]), 4),
             }
 
     meta = json.loads((MODEL_DIR / "metadata.json").read_text())
     metrics["validation_reference"] = meta.get("validation", {})
 
     out = RUN_DIR / "model_evaluation.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(metrics, indent=2))
 
     print(f"  held-out {a.split}: {metrics['n']:,} rows, {metrics['positive_rate']:.1%} recovered\n")

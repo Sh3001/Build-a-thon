@@ -42,5 +42,5 @@ RUN useradd --create-home --uid 10001 recoverai \
 USER recoverai
 
 EXPOSE 8000
-# Build the dataset, model and experiment on first boot, then serve.
-CMD ["sh", "-c", "python scripts/demo.py --no-serve && exec python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
+# Startup never generates datasets, creates databases, or applies external migrations.
+CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

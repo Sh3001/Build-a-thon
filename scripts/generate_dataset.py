@@ -285,6 +285,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=DATA_RAW)
     a = ap.parse_args()
 
+    a.out.mkdir(parents=True, exist_ok=True)
+    DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
     df = generate(a.n, a.seed)
     raw = a.out / "payment_recovery.csv"
     df[RAW_COLUMNS].to_csv(raw, index=False)

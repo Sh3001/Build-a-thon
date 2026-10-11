@@ -13,18 +13,22 @@ const STAGE_LABEL = {
   monitor_outcome: "Outcome monitored",
 };
 
-export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
+export function Trace({ transactionId, onSelect, caseIds = [], onBack, readOnly = false, onUpdated }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [onlyDecisions, setOnlyDecisions] = useState(false);
 
   useEffect(() => {
     if (!transactionId) return;
-    setBusy(true); setErr(null);
-    api.caseDetail(transactionId).then(setData)
-      .catch((e) => setErr(String(e))).finally(() => setBusy(false));
+    const controller = new AbortController();
+    setData(null); setBusy(true); setErr(null); setJob(null);
+    api.caseDetail(transactionId, { signal: controller.signal }).then(setData)
+      .catch(e => { if (e.name !== "AbortError") setErr(e.message); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    return () => controller.abort();
   }, [transactionId]);
 
   // Step through the queue in its current order without going back to the table.
@@ -43,10 +47,27 @@ export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [prev, next, onSelect]);
 
+  useEffect(() => {
+    if (!job || !["queued", "running"].includes(job.status)) return;
+    let active = true;
+    const timer = setTimeout(async () => {
+      try {
+        const next = await api.job(job.job_id);
+        if (!active) return;
+        setJob(next);
+        if (next.status === "succeeded") {
+          setData(await api.caseDetail(transactionId));
+          onUpdated?.();
+        }
+      } catch (e) { if (active) setErr(e.message); }
+    }, 1500);
+    return () => { active = false; clearTimeout(timer); };
+  }, [job, transactionId]);
+
   async function replay() {
-    setBusy(true);
-    try { await api.runOne(transactionId); setData(await api.caseDetail(transactionId)); }
-    catch (e) { setErr(String(e)); } finally { setBusy(false); }
+    setBusy(true); setErr(null);
+    try { setJob(await api.runOne(transactionId)); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
 
   async function copyId() {
@@ -73,6 +94,11 @@ export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
 
   return (
     <div className="card">
+      {job && <p role="status">Recovery job: {job.status.replaceAll("_", " ")}. {job.error}
+        {["queued", "running"].includes(job.status) && <button onClick={async () => {
+          try { setJob(await api.cancelJob(job.job_id)); } catch (e) { setErr(e.message); }
+        }}>Cancel remaining work</button>}
+      </p>}
       <div className="trace-head">
         <button className="linky mono h2ish" onClick={copyId}
                 title="Copy transaction id">
@@ -91,8 +117,8 @@ export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
                 title="Previous case in the queue (k)">&uarr; Prev</button>
         <button className="act" onClick={() => next && onSelect(next)} disabled={!next}
                 title="Next case in the queue (j)">&darr; Next</button>
-        <button className="act primary" onClick={replay} disabled={busy}>
-          {busy ? "running…" : "Re-run this case"}
+        <button className="act primary" onClick={replay} disabled={busy || readOnly || !["pending", "in_progress"].includes(c.status) || ["queued", "running"].includes(job?.status)}>
+          {busy ? "Submitting…" : readOnly ? "Read-only source" : "Start recovery"}
         </button>
       </div>
       {idx >= 0 && (
@@ -101,8 +127,11 @@ export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
         </div>
       )}
 
+      {c.data_source === "uci" && <p>Historical snapshot: {c.snapshot_date}. {c.root_cause}
+        {" "}The bill balance is not a measured overdue amount. USD uses a fixed illustrative rate of 0.031.
+        No recovery actions or outcomes were recorded by this application.</p>}
       <div className="tiles" style={{ marginTop: 14 }}>
-        <div className="tile"><div className="k">Amount at risk</div>
+        <div className="tile"><div className="k">{c.data_source === "uci" ? "Historical bill balance" : "Amount at risk"}</div>
           <div className="v">{fmtMoney(c.amount_usd, 2)}</div>
           <div className="s">{c.currency} {c.amount?.toLocaleString()}</div></div>
         <div className="tile"><div className="k">Recovery probability</div>
@@ -110,11 +139,11 @@ export function Trace({ transactionId, onSelect, caseIds = [], onBack }) {
           <div className="s">expected {fmtMoney(c.expected_recovery, 2)}</div></div>
         <div className="tile"><div className="k">Recovered</div>
           <div className={`v${c.amount_recovered > 0 ? " good" : ""}`}>
-            {fmtMoney(c.amount_recovered, 2)}</div>
+            {readOnly ? "Not available" : fmtMoney(c.amount_recovered, 2)}</div>
           <div className="s">{c.retries} retries · {c.contacts} contacts</div></div>
         <div className="tile"><div className="k">Audit chain</div>
           <div className={`v${data.chain_valid ? " good" : " critical"}`}
-               style={{ fontSize: 18 }}>{data.chain_valid ? "verified" : "BROKEN"}</div>
+               style={{ fontSize: 18 }}>{readOnly ? "Not available" : data.chain_valid ? "verified" : "BROKEN"}</div>
           <div className="s">{data.audit_events.length} events</div></div>
       </div>
 

@@ -32,6 +32,10 @@ class Profile:
 
 
 PROFILES: dict[str, Profile] = {
+    "readonly": Profile(
+        "readonly", "Authenticated access to an existing external payment source.",
+        requires=("RECOVERAI_JWT_SECRET", "RECOVERAI_SOURCE_URL", "RECOVERAI_SOURCE_QUERY"),
+        requires_auth=True, allows_anonymous_reads=False, allows_llm=False),
     "development": Profile(
         "development",
         "Local work. Mock rails, SQLite, anonymous reads, no secrets required.",
@@ -86,6 +90,8 @@ def validate(env: dict[str, str] | None = None) -> list[str]:
     problems: list[str] = []
 
     for key in profile.requires:
+        if key in ("RECOVERAI_SOURCE_URL", "RECOVERAI_SOURCE_QUERY") and e.get("RECOVERAI_SOURCE") == "uci":
+            continue
         value = e.get(key, "")
         if not value or len(value) < 8:
             problems.append(f"{key} is required in the {profile.name} profile")

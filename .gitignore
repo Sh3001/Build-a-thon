@@ -11,3 +11,10 @@ ml/model/*.joblib
 *.egg-info/
 .pytest_cache/
 .DS_Store
+.env
+.env.*
+!.env.example
+.venv311/
+*.worker.lock
+frontend/test-results/
+frontend/playwright-report/

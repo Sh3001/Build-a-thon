@@ -19,16 +19,17 @@ def _now() -> str:
 
 
 def _migrate(conn) -> None:
-    from backend.app.database.migrations import migrate
-    migrate(conn)
+    from backend.app.database.migrations import ensure_schema
+    ensure_schema(conn)
 
 
 class ActionLedger:
     """Durable idempotency. `remember`/`recall` are keyed by (run_id, idempotency_key)."""
 
     def __init__(self, run_id: str, path=DB_PATH, conn: Connection | None = None,
-                 url: str | None = DB_URL):
-        self.run_id = run_id
+                 url: str | None = DB_URL, tenant_id: str = "default"):
+        self.tenant_id = tenant_id
+        self.run_id = run_id if tenant_id == "default" else f"tenant:{len(tenant_id)}:{tenant_id}:{run_id}"
         self.conn = conn or connect(path, url)
         _migrate(self.conn)
 
@@ -39,16 +40,33 @@ class ActionLedger:
         return json.loads(row["result_json"]) if row else None
 
     def remember(self, key: str, transaction_id: str, action: str, result: dict) -> None:
-        # A second write for the same key is the replay case, not an error: keep the
-        # original result, since returning a *different* outcome for the same key would
-        # defeat the point of the ledger.
-        if self.recall(key) is not None:
-            return
         self.conn.execute(
             "INSERT INTO action_ledger "
-            "(idempotency_key, run_id, transaction_id, action, result_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (key, self.run_id, transaction_id, action, json.dumps(result, default=str), _now()))
+            "(idempotency_key, run_id, transaction_id, action, result_json, created_at, tenant_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (run_id, idempotency_key) DO NOTHING",
+            (key, self.run_id, transaction_id, action, json.dumps(result, default=str),
+             _now(), self.tenant_id))
+        self.conn.execute(
+            "UPDATE execution_claims SET status = 'succeeded', updated_at = ? "
+            "WHERE tenant_id = ? AND run_id = ? AND idempotency_key = ?",
+            (_now(), self.tenant_id, self.run_id, key))
+        self.conn.commit()
+
+    def claim(self, key: str, transaction_id: str) -> bool:
+        row = self.conn.execute(
+            "INSERT INTO execution_claims "
+            "(tenant_id, run_id, idempotency_key, transaction_id, status, updated_at) "
+            "VALUES (?, ?, ?, ?, 'in_progress', ?) "
+            "ON CONFLICT (tenant_id, run_id, idempotency_key) DO NOTHING RETURNING idempotency_key",
+            (self.tenant_id, self.run_id, key, transaction_id, _now())).fetchone()
+        self.conn.commit()
+        return row is not None
+
+    def uncertain(self, key: str) -> None:
+        self.conn.execute(
+            "UPDATE execution_claims SET status = 'unknown', updated_at = ? "
+            "WHERE tenant_id = ? AND run_id = ? AND idempotency_key = ?",
+            (_now(), self.tenant_id, self.run_id, key))
         self.conn.commit()
 
     def count(self) -> int:
@@ -68,8 +86,10 @@ class DLQStore:
     """
 
     def __init__(self, run_id: str, path=DB_PATH, conn: Connection | None = None,
-                 url: str | None = DB_URL, threshold: int = DLQ_FAILURE_THRESHOLD):
-        self.run_id = run_id
+                 url: str | None = DB_URL, threshold: int = DLQ_FAILURE_THRESHOLD,
+                 tenant_id: str = "default"):
+        self.tenant_id = tenant_id
+        self.run_id = run_id if tenant_id == "default" else f"tenant:{len(tenant_id)}:{tenant_id}:{run_id}"
         self.threshold = threshold
         self.conn = conn or connect(path, url)
         _migrate(self.conn)

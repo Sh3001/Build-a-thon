@@ -68,8 +68,8 @@ def upsert_sql(dialect: str, table: str, columns: list[str], keys: tuple[str, ..
 def _migrate(conn) -> None:
     """Imported here rather than at module scope: migrations imports both stores to build
     the baseline step, so a top-level import would be circular."""
-    from backend.app.database.migrations import migrate
-    migrate(conn)
+    from backend.app.database.migrations import ensure_schema
+    ensure_schema(conn)
 
 
 #: The tenant a single-tenant deployment writes under. Existing rows adopt it in
@@ -157,7 +157,7 @@ class CaseStore:
             args.append(failure_code)
         # Both col and dir come from closed sets -- never interpolate caller input.
         dir_sql = "ASC" if str(direction).lower() == "asc" else "DESC"
-        sql += f" ORDER BY {col} {dir_sql} LIMIT ? OFFSET ?"
+        sql += f" ORDER BY {col} {dir_sql}, transaction_id ASC LIMIT ? OFFSET ?"
         args += [limit, offset]
         out = []
         for r in self.conn.execute(sql, args):
@@ -172,5 +172,4 @@ class CaseStore:
             (self.tenant_id, strategy)).fetchone()["c"])
 
     def close(self) -> None:
-        self.conn.commit()
         self.conn.close()

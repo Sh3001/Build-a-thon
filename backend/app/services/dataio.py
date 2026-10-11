@@ -33,14 +33,30 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
-from pydantic import ValidationError
+from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from backend.app.adapters.processor_codes import normalise
-from backend.app.config import DATA_PROCESSED, to_usd
+from backend.app.config import DATA_PROCESSED, FX_TO_USD, to_usd
 from backend.app.models.schemas import Transaction
+
+
+class SourceTransaction(Transaction):
+    """Validate money at the untrusted source boundary before reporting USD amounts."""
+    model_config = ConfigDict(allow_inf_nan=False)
+    amount: float = Field(gt=0)
+    customer_id: str = Field(min_length=1)
+    transaction_id: str = Field(min_length=1)
+
+    @field_validator("currency")
+    @classmethod
+    def supported_currency(cls, value: str) -> str:
+        value = value.upper()
+        if value not in FX_TO_USD:
+            raise ValueError("currency has no configured reporting exchange rate")
+        return value
 
 
 # --------------------------------------------------------------------------- csv splits
@@ -203,6 +219,13 @@ class SqlSource:
             raise SqlSourceError(
                 f"source query contains {found.group(0)!r}; this connection is read-only")
 
+    def __post_init__(self):
+        if not 1 <= self.limit <= 10000:
+            raise SqlSourceError("source limit must be between 1 and 10000")
+        if not isinstance(self.column_map, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in self.column_map.items()):
+            raise SqlSourceError("source columns must be a JSON object mapping column names")
+
     def _connect(self):
         conn = self._open()
         # Belt and braces with check_read_only: the server itself refuses a write on this
@@ -212,6 +235,9 @@ class SqlSource:
         try:
             conn.read_only = True
         except (AttributeError, TypeError) as exc:
+            close = getattr(conn, "close", None)
+            if callable(close):
+                close()
             raise SqlSourceError(
                 f"{type(conn).__name__} does not support a read-only session; refusing to "
                 f"query a payments database over a connection that could write") from exc
@@ -225,15 +251,25 @@ class SqlSource:
             from psycopg.rows import dict_row
         except ImportError as exc:            # pragma: no cover - dependency present
             raise SqlSourceError("psycopg is required to read from a SQL source") from exc
-        return psycopg.connect(self.url, row_factory=dict_row, autocommit=True)
+        if not self.url.startswith(("postgresql://", "postgres://")):
+            raise SqlSourceError("The external source currently supports PostgreSQL URLs")
+        return psycopg.connect(self.url, row_factory=dict_row, autocommit=True,
+                               connect_timeout=5,
+                               options="-c default_transaction_read_only=on -c statement_timeout=10000")
 
     # ------------------------------------------------------------------ fetch
     def fetch(self, limit: int | None = None) -> FetchResult:
         self.check_read_only(self.query)
         cap = self.limit if limit is None else limit
+        if not 1 <= cap <= 10000:
+            raise SqlSourceError("fetch limit must be between 1 and 10000")
         conn = self._connect()
         try:
-            cur = conn.execute(self.query)
+            query = self.query
+            if self.connect_fn is None:
+                # A client-side fetchmany alone does not bound libpq buffering.
+                query = f"SELECT * FROM ({self.query.strip().rstrip(';')}) AS recovery_source LIMIT {cap}"
+            cur = conn.execute(query)
             rows = [dict(r) for r in cur.fetchmany(cap)]
         finally:
             close = getattr(conn, "close", None)
@@ -280,7 +316,7 @@ class SqlSource:
                 reason = (f"failure code {raw!r} is not mapped for provider "
                           f"{self.provider!r}; refusing to guess a cause")
                 reasons[reason] = reasons.get(reason, 0) + 1
-                rejects.append({"transaction_id": ref, "reason": reason, "row": row})
+                rejects.append({"transaction_id": ref, "reason": reason, "row": mapped})
                 continue
             mapped["failure_code"] = code
 
@@ -291,12 +327,12 @@ class SqlSource:
                     defaulted["days_since_failure"] -= 1
 
             try:
-                accepted.append(Transaction(**mapped))
+                accepted.append(SourceTransaction(**mapped))
             except ValidationError as exc:
                 first = exc.errors()[0]
                 reason = f"{'.'.join(str(p) for p in first['loc'])}: {first['msg']}"
                 reasons[reason] = reasons.get(reason, 0) + 1
-                rejects.append({"transaction_id": ref, "reason": reason, "row": row})
+                rejects.append({"transaction_id": ref, "reason": reason, "row": mapped})
 
         report = FetchReport(
             fetched=fetched, accepted=len(accepted), rejected=len(rejects),
@@ -337,8 +373,8 @@ class SqlSource:
         except (TypeError, ValueError):
             return None
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return round((datetime.now(timezone.utc) - when).total_seconds() / 86400.0, 3)
+            when = when.replace(tzinfo=UTC)
+        return round((datetime.now(UTC) - when).total_seconds() / 86400.0, 3)
 
 
 # --------------------------------------------------------------------------- cli

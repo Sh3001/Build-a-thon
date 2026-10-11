@@ -142,6 +142,7 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump({"kind": chosen, "xgb": xgb, "lr": lr, "scaler": scaler,
                  "calibrator": calib, "features": FEATURES}, OUT_DIR / "model.joblib")
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     (RUN_DIR / "real_model_evaluation.json").write_text(json.dumps(metrics, indent=2))
 
     print("  --- HELD-OUT TEST (real customers, real outcomes) ---")

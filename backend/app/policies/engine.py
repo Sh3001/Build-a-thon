@@ -453,7 +453,8 @@ def _first_verdict(rules: dict[str, Rule], state: AgentState, action: ProposedAc
 
 
 def validate(state: AgentState, action: ProposedAction,
-             ctx: PolicyContext | None = None) -> PolicyResult:
+             ctx: PolicyContext | None = None, *,
+             approved_review_rule: str | None = None) -> PolicyResult:
     """The single gate. Returns the only action that may be executed.
 
     Four verdicts are possible and exactly two of them permit execution:
@@ -469,6 +470,8 @@ def validate(state: AgentState, action: ProposedAction,
     """
     ctx = ctx or PolicyContext()
     fired: list[str] = []
+    review_rules = {key: rule for key, rule in REVIEW_RULES.items()
+                    if key != approved_review_rule}
 
     try:
         hit = _first_verdict(REJECT_RULES, state, action, ctx)
@@ -478,7 +481,7 @@ def validate(state: AgentState, action: ProposedAction,
             return PolicyResult(decision=PolicyDecision.REJECT, effective_action=None,
                                 rules_fired=fired, reason=f"{rid}: {v.reason}")
 
-        hit = _first_verdict(REVIEW_RULES, state, action, ctx)
+        hit = _first_verdict(review_rules, state, action, ctx)
         if hit is not None:
             rid, v = hit
             fired.append(rid)
@@ -512,7 +515,7 @@ def validate(state: AgentState, action: ProposedAction,
                     decision=PolicyDecision.REJECT, effective_action=None,
                     rules_fired=fired,
                     reason=f"{rid}: {v.reason} (the rewritten action was refused)")
-            hit = _first_verdict(REVIEW_RULES, state, effective, ctx)
+            hit = _first_verdict(review_rules, state, effective, ctx)
             if hit is not None:
                 rid, v = hit
                 fired.append(rid)

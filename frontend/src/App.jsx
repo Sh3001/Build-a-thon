@@ -1,3 +1,4 @@
+import { ConnectionState } from "./components/ConnectionState";
 import React, { useEffect, useState } from "react";
 import { api, fmtNum } from "./services/api";
 import { Overview } from "./pages/Overview";
@@ -45,6 +46,8 @@ export default function App() {
   const [overview, setOverview] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [selected, setSelectedState] = useState(() => parseHash().id);
+  const [connection, setConnection] = useState(null);
+  const [revision, setRevision] = useState(0);
   const [err, setErr] = useState(null);
   // Set when a tile or bar on another page drills into the queue; `at` makes an identical
   // preset a new object, so clicking the same tile twice still re-applies it.
@@ -91,10 +94,23 @@ export default function App() {
   });
 
   useEffect(() => {
-    api.health().then(setHealth).catch((e) => setErr(String(e)));
-    api.overview().then(setOverview).catch((e) => setErr(String(e)));
-    api.metrics().then(setMetrics).catch((e) => setErr(String(e)));
-  }, []);
+    let active = true;
+    setErr(null);
+    api.sourceStatus().then(async status => {
+      if (!active) return;
+      setConnection(status);
+      if (status.storage_configured && !status.source_configured) {
+        const [o, m] = await Promise.all([api.overview(), api.metrics()]);
+        if (active) { setOverview(o); setMetrics(m); }
+      }
+    }).catch(e => active && setErr(e.message));
+    api.health().then(h => active && setHealth(h)).catch(e => active && setErr(e.message));
+    return () => { active = false; };
+  }, [revision]);
+
+  const external = connection?.source_configured;
+  const setup = connection && !connection.source_configured && !connection.storage_configured;
+  const showConnection = setup || (external && !["queue", "trace"].includes(tab));
 
   function openQueue(preset) {
     setQueuePreset({ ...preset, at: Date.now() });
@@ -121,8 +137,8 @@ export default function App() {
             db <b>{health.db_engine}</b> ·{" "}
             audit <b>{fmtNum(health.audit_rows)}</b> rows ·{" "}
             chain{" "}
-            <b style={{ color: health.audit_chain_valid ? "var(--good)" : "var(--critical)" }}>
-              {health.audit_chain_valid ? "verified" : "BROKEN"}
+            <b style={{ color: health.audit_chain_valid == null ? "inherit" : health.audit_chain_valid ? "var(--good)" : "var(--critical)" }}>
+              {health.audit_chain_valid == null ? "not checked" : health.audit_chain_valid ? "verified" : "BROKEN"}
             </b>
           </span>
         )}
@@ -143,18 +159,22 @@ export default function App() {
         ))}
       </nav>
 
-      {err && <div className="err">{err} - is the backend running on :8000?</div>}
+      {err && <div className="err" role="alert">{err} <button onClick={() => setRevision(r => r + 1)}>Retry</button></div>}
+      {showConnection && <ConnectionState status={connection} onQueue={() => setTab("queue")} />}
+      {!showConnection && <>
 
       {tab === "overview" && <Overview overview={overview} metrics={metrics} onDrill={openQueue} />}
       {tab === "queue" && <Queue onSelect={openCase} selected={selected} metrics={metrics}
-                                 preset={queuePreset} onRows={setCaseIds} />}
+                                 preset={queuePreset} onRows={setCaseIds} sourceKind={connection?.source_kind} />}
       {tab === "trace" && <Trace transactionId={selected} onSelect={setSelected}
-                                 caseIds={caseIds} onBack={() => setTab("queue")} />}
+                                 caseIds={caseIds} onBack={() => setTab("queue")} readOnly={external}
+                                 onUpdated={() => setRevision(r => r + 1)} />}
       {tab === "analytics" && <Analytics metrics={metrics} />}
       {tab === "reviews" && <Reviews onSelect={openCase} />}
       {tab === "audit" && <AuditLog onSelect={openCase} />}
       {tab === "dlq" && <DLQ />}
       {tab === "ask" && <Assistant onOpenCase={openCase} />}
+      </>}
     </div>
   );
 }

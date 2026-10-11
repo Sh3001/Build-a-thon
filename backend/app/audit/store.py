@@ -73,8 +73,8 @@ GENESIS = "0" * 64
 def _migrate(conn) -> None:
     """Imported here rather than at module scope: migrations imports both stores to build
     the baseline step, so a top-level import would be circular."""
-    from backend.app.database.migrations import migrate
-    migrate(conn)
+    from backend.app.database.migrations import ensure_schema
+    ensure_schema(conn)
 
 
 class AuditStore:
@@ -82,7 +82,8 @@ class AuditStore:
     a single run owns the writer."""
 
     def __init__(self, path: Path | str = DB_PATH, conn: Connection | None = None,
-                 url: str | None = DB_URL):
+                 url: str | None = DB_URL, tenant_id: str | None = None):
+        self.tenant_id = tenant_id
         self.conn = conn or connect(path, url)
         _migrate(self.conn)
         self._tail: str | None = None
@@ -112,6 +113,14 @@ class AuditStore:
         return out
 
     def append(self, event: AuditEvent) -> int:
+        if self.tenant_id is not None and event.tenant_id != self.tenant_id:
+            raise ValueError("audit tenant does not match writer")
+        # Serialize writers before reading the global chain tail.
+        if self.conn.is_pg:
+            self.conn.execute("SELECT pg_advisory_xact_lock(73198421)")
+        elif not self.conn.raw.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        self._tail = None
         payload = self._normalise(event)
         prev = self.tail_hash()
         # The version is inside the hashed payload, so an attacker cannot downgrade a row
@@ -165,43 +174,48 @@ class AuditStore:
             prev = row["row_hash"]
         return True, None
 
+    def _scope(self) -> tuple[str, list]:
+        if self.tenant_id is None:
+            return "1=1", []
+        return "COALESCE(tenant_id, 'default') = ?", [self.tenant_id]
+
     def timeline(self, transaction_id: str) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM audit_log WHERE transaction_id = ? ORDER BY seq", (transaction_id,))
-        return [dict(r) for r in rows]
+        scope, args = self._scope()
+        return [dict(r) for r in self.conn.execute(
+            f"SELECT * FROM audit_log WHERE {scope} AND transaction_id = ? ORDER BY seq",
+            [*args, transaction_id])]
 
     def recent(self, limit: int = 200, transaction_id: str | None = None,
                decision: str | None = None, policy_result: str | None = None) -> list[dict]:
-        sql = "SELECT * FROM audit_log"
-        where, args = [], []
-        if transaction_id:
-            where.append("transaction_id = ?")
-            args.append(transaction_id)
-        if decision:
-            where.append("agent_decision = ?")
-            args.append(decision)
-        if policy_result:
-            where.append("policy_result = ?")
-            args.append(policy_result)
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY seq DESC LIMIT ?"
-        args.append(limit)
-        return [dict(r) for r in self.conn.execute(sql, args)]
+        scope, args = self._scope()
+        where = [scope]
+        for col, value in (("transaction_id", transaction_id), ("agent_decision", decision),
+                           ("policy_result", policy_result)):
+            if value:
+                where.append(f"{col} = ?")
+                args.append(value)
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM audit_log WHERE " + " AND ".join(where)
+            + " ORDER BY seq DESC LIMIT ?", [*args, limit])]
 
     def count(self) -> int:
-        return int(self.conn.execute("SELECT COUNT(*) c FROM audit_log").fetchone()["c"])
+        scope, args = self._scope()
+        return int(self.conn.execute(
+            f"SELECT COUNT(*) c FROM audit_log WHERE {scope}", args).fetchone()["c"])
 
     def decision_counts(self) -> dict[str, int]:
+        scope, args = self._scope()
         rows = self.conn.execute(
-            "SELECT policy_result p, COUNT(*) c FROM audit_log "
-            "WHERE policy_result IS NOT NULL GROUP BY policy_result")
+            f"SELECT policy_result p, COUNT(*) c FROM audit_log WHERE {scope} "
+            "AND policy_result IS NOT NULL GROUP BY policy_result", args)
         return {r["p"]: int(r["c"]) for r in rows}
 
     def rule_counts(self) -> dict[str, int]:
+        scope, args = self._scope()
         out: dict[str, int] = {}
         for r in self.conn.execute(
-                "SELECT rules_fired FROM audit_log WHERE rules_fired IS NOT NULL AND rules_fired != ''"):
+                f"SELECT rules_fired FROM audit_log WHERE {scope} "
+                "AND rules_fired IS NOT NULL AND rules_fired != ''", args):
             for rule in str(r["rules_fired"]).split(","):
                 if rule:
                     out[rule] = out.get(rule, 0) + 1

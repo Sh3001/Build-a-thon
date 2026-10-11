@@ -180,6 +180,30 @@ CREATE TABLE IF NOT EXISTS customer_consent (
     PRIMARY KEY (tenant_id, customer_id, channel)
 );
 """),
+    ("009_durable_jobs", """
+CREATE TABLE execution_claims (
+ tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+ transaction_id TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY (tenant_id, run_id, idempotency_key)
+);
+CREATE TABLE recovery_jobs (
+ job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, request_key TEXT NOT NULL,
+ payload TEXT NOT NULL, status TEXT NOT NULL, result TEXT, error TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, request_id TEXT, requested_by TEXT,
+ UNIQUE (tenant_id, request_key)
+);
+CREATE INDEX idx_jobs_status ON recovery_jobs(status, created_at);
+CREATE TABLE recovery_checkpoints (
+ tenant_id TEXT NOT NULL, transaction_id TEXT NOT NULL, state_json TEXT NOT NULL,
+ PRIMARY KEY (tenant_id, transaction_id)
+);
+CREATE TABLE recovery_outbox (
+ event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, event_type TEXT NOT NULL,
+ payload TEXT NOT NULL, created_at TEXT NOT NULL, published_at TEXT
+);
+ALTER TABLE human_review ADD COLUMN state_json TEXT;
+"""),
+
 ]
 
 LEDGER = """
@@ -219,3 +243,23 @@ def migrate(conn) -> list[str]:
 def pending(conn) -> list[str]:
     done = applied_versions(conn)
     return [v for v, _ in MIGRATIONS if v not in done]
+
+
+def ensure_schema(conn) -> None:
+    """External databases are validated, never migrated as a side effect of a request."""
+    if conn.schema_ready:
+        return
+    if not conn.is_pg:
+        migrate(conn)
+    else:
+        from backend.app.database.db import StorageUnavailable
+        try:
+            done = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
+        except Exception as exc:
+            conn.rollback()
+            raise StorageUnavailable(
+                "Recovery schema is missing. Provision it explicitly in a dedicated "
+                "application schema using python -m scripts.migrate_database.") from exc
+        if any(v not in done for v, _ in MIGRATIONS):
+            raise StorageUnavailable("Recovery schema needs an explicit migration.")
+    conn.schema_ready = True

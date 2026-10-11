@@ -148,16 +148,16 @@ def _agg_sql(q: DataQuery) -> str:
             Agg.MIN: f"MIN({col})", Agg.MAX: f"MAX({col})"}[q.agg]
 
 
-def run(conn, q: DataQuery, strategy: str = "recoverai") -> Result:
+def run(conn, q: DataQuery, strategy: str = "recoverai", tenant_id: str = "default") -> Result:
     """Execute a validated query. Callers must have checked `validate_against_schema`."""
     where, args = _where(q.filters)
-    scope = "strategy = ?" + (f" AND {where}" if where else "")
-    args = [strategy, *args]
+    scope = "tenant_id = ? AND strategy = ?" + (f" AND {where}" if where else "")
+    args = [tenant_id, strategy, *args]
 
     matched = int(conn.execute(
         f"SELECT COUNT(*) c FROM cases WHERE {scope}", args).fetchone()["c"])
     grand = int(conn.execute(
-        "SELECT COUNT(*) c FROM cases WHERE strategy = ?", [strategy]).fetchone()["c"])
+        "SELECT COUNT(*) c FROM cases WHERE tenant_id = ? AND strategy = ?", [tenant_id, strategy]).fetchone()["c"])
 
     if q.agg is Agg.LIST:
         order = sql_field(q.order_by or "expected_recovery")

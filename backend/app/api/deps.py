@@ -66,7 +66,8 @@ def principal(
     the body-size limit is enforced by middleware before either.
     """
     registry = get_registry()
-    new_trace_id()
+    if not getattr(request.state, "trace_id", None):
+        request.state.trace_id = new_trace_id()
     policy = get_auth_policy()
     try:
         who = policy.authenticate(authorization=authorization, api_key=x_api_key)

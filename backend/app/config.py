@@ -12,9 +12,6 @@ DATA_PROCESSED = ROOT / "data" / "processed"
 MODEL_DIR = ROOT / "ml" / "model"
 RUN_DIR = ROOT / "data" / "runs"
 
-for _d in (DATA_RAW, DATA_PROCESSED, MODEL_DIR, RUN_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
-
 DB_PATH = Path(os.environ.get("RECOVERAI_DB", RUN_DIR / "recoverai.db"))
 #: Set to a postgresql:// URL to run the stores on Postgres instead of SQLite. Unset
 #: (the default) keeps the zero-setup SQLite path. See backend/app/database/db.py.

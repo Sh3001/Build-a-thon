@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.app.api.deps import require, tenant_consent, tenant_reviews
+from backend.app.database.jobs import JobStore
 from backend.app.database.review import NotAuthorised, ReviewClosed
 from backend.app.models.enums import Role
 from backend.app.observability.metrics import M, get_registry
@@ -114,7 +115,18 @@ def approve(review_id: str, body: ResolveRequest,
     """Authorise the withheld action. Records the override; does not execute."""
     store = tenant_reviews(who)
     try:
-        result = store.approve(review_id, who.subject, _first_role(who), body.reason)
+        with store.conn.transaction():
+            result = store.approve(review_id, who.subject, _first_role(who), body.reason)
+            row = store.get(review_id)
+            job = None
+            from backend.app.policies.engine import REVIEW_RULES
+            if row["state_json"] and row["rule_id"] in REVIEW_RULES:
+                jobs = JobStore(who.tenant_id, conn=store.conn)
+                from backend.app.observability.logging import current_trace_id
+                job = jobs.enqueue({"review_id": review_id}, f"review:{review_id}",
+                                   request_id=current_trace_id(), actor=who.subject)
+                jobs.event(f"review:{review_id}:approved", "review.approved",
+                           {"review_id": review_id, "job_id": job["job_id"]})
     except KeyError as exc:
         raise HTTPException(404, "no such review task") from exc
     except ReviewClosed as exc:
@@ -130,10 +142,11 @@ def approve(review_id: str, body: ResolveRequest,
                            {"outcome": "approved", "tenant": who.tenant_id})
     return {
         "review_id": review_id, "decision": result.decision.value,
+        "job_id": job["job_id"] if job else None,
         "rules_fired": result.rules_fired, "reason": result.reason,
         "approved_action": result.effective_action.model_dump(mode="json")
                            if result.effective_action else None,
-        "note": ("recorded as approved. The action still runs through the executor, "
+        "note": "Approved and queued for execution." if job else ("recorded as approved. The action still runs through the executor, "
                  "which requires this verdict -- approval authorises, it does not "
                  "execute."),
     }

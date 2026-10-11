@@ -32,9 +32,13 @@ def fresh():
     c = connect(url=URL)
     # schema_migrations must go too: leave the ledger behind and the runner correctly
     # believes the (now dropped) tables are already there and skips recreating them.
-    for t in ("audit_log", "cases", "runs", "schema_migrations"):
+    for t in ("audit_log", "cases", "runs", "schema_migrations", "action_ledger", "dlq",
+              "human_review", "decision_overrides", "customer_consent", "execution_claims",
+              "recovery_jobs", "recovery_checkpoints", "recovery_outbox"):
         c.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     c.commit()
+    from backend.app.database.migrations import migrate
+    migrate(c)
     c.close()
     yield URL
 

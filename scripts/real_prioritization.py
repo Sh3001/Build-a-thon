@@ -63,6 +63,7 @@ def main() -> int:
            "n_cases": len(test), "recoverable_usd": round(recoverable, 2),
            "assumptions": "none -- real amounts and real observed outcomes only",
            "results": results}
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     (RUN_DIR / "real_prioritization.json").write_text(json.dumps(out, indent=2))
     print(f"\n  saved -> {RUN_DIR}/real_prioritization.json")
     return 0

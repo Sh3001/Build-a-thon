@@ -246,6 +246,7 @@ def main() -> int:
     out = {"source": "UCI default of credit card clients (real)",
            "n_cases": len(test), "at_risk_usd": round(float(test["amount_usd"].sum()), 2),
            "status_quo": sq, "sweep": rows}
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     (RUN_DIR / "real_experiment.json").write_text(json.dumps(out, indent=2, default=str))
     print(f"\n  saved -> {RUN_DIR}/real_experiment.json")
     return 0

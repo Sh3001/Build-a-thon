@@ -17,6 +17,7 @@ usage() {
   cat <<'USAGE'
 RecoverAI
 
+  ./run.sh uci [PORT]     fetch UCI if missing, then serve without a database
   ./run.sh serve [PORT]   serve the dashboard + API   (default 8000)
   ./run.sh demo [ARGS]    full pipeline, then serve   (--quick, --no-serve, ...)
   ./run.sh test [ARGS]    run the test suite
@@ -32,6 +33,11 @@ USAGE
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  uci)
+    export RECOVERAI_SOURCE=uci
+    "$PY" -m scripts.fetch_uci
+    exec "$PY" -m uvicorn backend.app.main:app --port "${1:-8000}"
+    ;;
   serve)
     port="${1:-8000}"
     echo "→ http://127.0.0.1:$port/"

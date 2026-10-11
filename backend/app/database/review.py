@@ -34,8 +34,8 @@ def _now() -> datetime:
 
 
 def _migrate(conn) -> None:
-    from backend.app.database.migrations import migrate
-    migrate(conn)
+    from backend.app.database.migrations import ensure_schema
+    ensure_schema(conn)
 
 
 class NotAuthorised(PermissionError):
@@ -166,10 +166,15 @@ class ReviewStore:
                 f"second operator overwrite the first without either seeing the conflict")
 
         now = _now()
-        self.conn.execute(
+        if row["expires_at"] and row["expires_at"] <= now.isoformat():
+            raise ReviewClosed("Review approval has expired")
+        updated = self.conn.execute(
             "UPDATE human_review SET status = ?, resolved_at = ?, resolved_by = ?, "
-            "resolution_note = ? WHERE tenant_id = ? AND review_id = ?",
-            (status.value, now.isoformat(), actor, reason, self.tenant_id, review_id))
+            "resolution_note = ? WHERE tenant_id = ? AND review_id = ? AND status = 'pending' "
+            "RETURNING review_id",
+            (status.value, now.isoformat(), actor, reason, self.tenant_id, review_id)).fetchone()
+        if updated is None:
+            raise ReviewClosed("Review was already resolved by another operator")
         self.conn.execute(
             "INSERT INTO decision_overrides (override_id, review_id, tenant_id, "
             "transaction_id, actor, actor_role, at, original_decision, new_decision, "

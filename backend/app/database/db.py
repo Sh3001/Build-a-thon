@@ -13,8 +13,10 @@ only genuinely dialect-specific constructs (autoincrement, upsert) are branched.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterable, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +71,8 @@ class Connection:
     def __init__(self, dialect: str, raw: Any):
         self.dialect = dialect
         self.raw = raw
+        self._transaction_depth = 0
+        self.schema_ready = False
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -115,11 +119,40 @@ class Connection:
                 cur.execute(stmt)
 
     def commit(self) -> None:
-        self.raw.commit()
+        if not self._transaction_depth:
+            self.raw.commit()
+
+    def rollback(self) -> None:
+        self.raw.rollback()
+
+    @contextmanager
+    def transaction(self):
+        """Store-level commits join this transaction instead of committing early."""
+        outer = self._transaction_depth == 0
+        self._transaction_depth += 1
+        try:
+            yield self
+            if outer:
+                self.raw.commit()
+        except BaseException:
+            if outer:
+                self.raw.rollback()
+            raise
+        finally:
+            self._transaction_depth -= 1
 
     def close(self) -> None:
-        self.raw.commit()
+        # Closing is cleanup, never an implicit successful transaction.
         self.raw.close()
+
+
+class StorageUnavailable(RuntimeError):
+    pass
+
+
+def state_configured() -> bool:
+    return bool(os.environ.get("RECOVERAI_DB_URL") or os.environ.get("RECOVERAI_DB")
+                or os.environ.get("RECOVERAI_ALLOW_SQLITE") == "1")
 
 
 def connect(path: Path | str = DB_PATH, url: str | None = DB_URL) -> Connection:
@@ -131,10 +164,15 @@ def connect(path: Path | str = DB_PATH, url: str | None = DB_URL) -> Connection:
     if url:
         import psycopg
         from psycopg.rows import dict_row
-        raw = psycopg.connect(url, row_factory=dict_row, autocommit=False)
+        raw = psycopg.connect(url, row_factory=dict_row, autocommit=False, connect_timeout=5)
         return Connection(POSTGRES, raw)
 
     p = Path(path)
+    if p == DB_PATH and not (os.environ.get("RECOVERAI_DB")
+                             or os.environ.get("RECOVERAI_ALLOW_SQLITE") == "1"):
+        raise StorageUnavailable(
+            "Recovery storage is not configured. Set RECOVERAI_DB_URL to an existing "
+            "PostgreSQL database. Local SQLite requires explicit RECOVERAI_ALLOW_SQLITE=1.")
     p.parent.mkdir(parents=True, exist_ok=True)
     raw = sqlite3.connect(str(p), check_same_thread=False)
     raw.row_factory = sqlite3.Row

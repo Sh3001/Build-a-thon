@@ -7,6 +7,16 @@ import { fmtMoney, fmtNum, fmtPct, titleize } from "../services/api";
 export function Overview({ overview: o, metrics: m, onDrill }) {
   if (!o || !m) return <div className="empty">Loading…</div>;
   const agent = m.recoverai, base = m.baseline, cmp = m.comparison;
+  if (!base?.strategy) return <>
+    <p className="card">Recovery results · {m.meta?.provenance || "unclassified"} data.
+      Experiment comparisons are unavailable for this run.</p>
+    <div className="tiles">
+      <StatTile label="Revenue at risk" value={fmtMoney(o.revenue_at_risk)} onClick={() => onDrill({})} />
+      <StatTile label="Recovered" value={fmtMoney(o.revenue_recovered)} />
+      <StatTile label="Cases processed" value={fmtNum(o.cases_processed)} />
+      <StatTile label="Recovery rate" value={fmtPct(o.recovery_rate)} />
+    </div>
+  </>;
 
   const control = m.control || {};
   const cats = Object.keys(agent.by_category || {});

@@ -6,6 +6,7 @@ import { fmtMoney, fmtNum, fmtPct, titleize } from "../services/api";
 
 export function Analytics({ metrics: m }) {
   if (!m) return <div className="empty">Loading…</div>;
+  if (!m.baseline?.strategy) return <div className="card">Experiment comparisons require a measured baseline and control group.</div>;
   const agent = m.recoverai, base = m.baseline, cmp = m.comparison, model = m.model || {};
 
   const series = [

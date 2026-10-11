@@ -20,32 +20,54 @@ function authHeaders() {
   }
 }
 
-async function get(path) {
-  const r = await fetch(BASE + path, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`${path} -> ${r.status} ${await r.text()}`);
-  return r.json();
+export async function request(path, { method = "GET", body, signal, headers = {}, timeout = 15000 } = {}) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
+  try {
+    const response = await fetch(BASE + path, {
+      method, signal: controller.signal,
+      headers: { ...authHeaders(), ...(body ? { "Content-Type": "application/json" } : {}), ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      const detail = typeof payload.detail === "string" ? payload.detail : `Request failed (${response.status})`;
+      const error = new Error(detail);
+      error.status = response.status;
+      error.requestId = response.headers.get("X-Request-ID");
+      throw error;
+    }
+    return await response.json();
+  } catch (error) {
+    if (timedOut) throw new Error("The request timed out. Refresh to check its status.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
 }
-async function post(path, body) {
-  const r = await fetch(BASE + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!r.ok) throw new Error(`${path} -> ${r.status} ${await r.text()}`);
-  return r.json();
-}
+const get = (path, options) => request(path, options);
+const post = (path, body, options) => request(path, { ...options, method: "POST", body });
 
 export const api = {
   health: () => get("/api/health"),
+  sourceStatus: () => get("/api/source/status"),
+  sourceReport: (options) => get("/api/source/report", options),
+  job: (id) => get(`/api/jobs/${encodeURIComponent(id)}`),
+  cancelJob: (id) => post(`/api/jobs/${encodeURIComponent(id)}/cancel`),
   overview: () => get("/api/overview"),
   metrics: () => get("/api/metrics"),
   baseline: () => get("/api/baseline"),
   revenueAtRisk: (top = 10) => get(`/api/revenue-at-risk?top=${top}`),
-  queue: (p = {}) => {
+  queue: (p = {}, options) => {
     const q = new URLSearchParams({ limit: 100, sort: "expected_recovery", ...p });
-    return get(`/api/recovery-queue?${q}`);
+    return get(`/api/recovery-queue?${q}`, options);
   },
-  caseDetail: (id) => get(`/api/cases/${id}`),
+  caseDetail: (id, options) => get(`/api/cases/${encodeURIComponent(id)}`, options),
   caseAudit: (id) => get(`/api/cases/${id}/audit`),
   auditLog: (limit = 200, decision, policyResult) => {
     const q = new URLSearchParams({ limit });
@@ -66,7 +88,7 @@ export const api = {
   policy: () => get("/api/v1/policy"),
   models: () => get("/api/v1/models"),
   chat: (question, router = "keywords") => post("/api/chat", { question, router }),
-  runOne: (id) => post(`/api/recovery/run/${id}`),
+  runOne: (id, key = crypto.randomUUID()) => post(`/api/recovery/run/${encodeURIComponent(id)}`, null, { headers: { "Idempotency-Key": key } }),
   runBatch: (limit) => post("/api/recovery/run", { limit, persist: true }),
 };
 

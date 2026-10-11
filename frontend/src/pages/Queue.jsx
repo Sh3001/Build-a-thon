@@ -14,12 +14,14 @@ const COLS = [
   { key: "status", label: "Status" },
 ];
 
-const STATUSES = ["recovered", "escalated", "stopped", "exhausted"];
+const STATUSES = ["pending", "recovered", "escalated", "stopped", "exhausted"];
 const PREFS = "recoverai.queue";
 const DEFAULTS = { sort: "expected_recovery", dir: "desc", status: "", code: "" };
 
-export function Queue({ onSelect, selected, metrics, preset, onRows }) {
-  const saved = useMemo(() => loadPrefs(PREFS, DEFAULTS), []);
+export function Queue({ onSelect, selected, metrics, preset, onRows, sourceKind }) {
+  const historical = sourceKind === "uci";
+  const saved = useMemo(() => historical ? { ...DEFAULTS, sort: "amount_usd" } : loadPrefs(PREFS, DEFAULTS), [historical]);
+  const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState([]);
   const [sort, setSort] = useState(saved.sort);
   const [dir, setDir] = useState(saved.dir);
@@ -33,16 +35,19 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setBusy(true);
-    api.queue({ limit: 200, sort, direction: dir,
-                ...(status && { status }), ...(code && { failure_code: code }) })
+    api.queue({ limit: 200, offset, sort, direction: dir,
+                ...(status && { status }), ...(code && { failure_code: code }) }, { signal: controller.signal })
       .then((r) => { if (live) { setRows(r); setErr(null); } })
-      .catch((e) => live && setErr(String(e)))
+      .catch((e) => live && e.name !== "AbortError" && setErr(String(e)))
       .finally(() => live && setBusy(false));
-    return () => { live = false; };
-  }, [sort, dir, status, code]);
+    return () => { live = false; controller.abort(); };
+  }, [sort, dir, status, code, offset]);
 
-  useEffect(() => { savePrefs(PREFS, { sort, dir, status, code }); }, [sort, dir, status, code]);
+  useEffect(() => { setOffset(0); }, [sort, dir, status, code]);
+
+  useEffect(() => { if (!historical) savePrefs(PREFS, { sort, dir, status, code }); }, [sort, dir, status, code, historical]);
 
   // A drill-down from the Overview replaces the current filters outright, so what you
   // land on always matches the tile you clicked.
@@ -82,7 +87,7 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
   }
   function reset() {
     setStatus(""); setCode(""); setQ("");
-    setSort(DEFAULTS.sort); setDir(DEFAULTS.dir);
+    setSort(historical ? "amount_usd" : DEFAULTS.sort); setDir(DEFAULTS.dir);
     searchRef.current?.focus();
   }
 
@@ -92,10 +97,10 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
 
   return (
     <div className="card">
-      <h2>Recovery queue</h2>
+      <h2>{historical ? "Historical delinquent accounts" : "Recovery queue"}</h2>
       <div className="sub">
-        Ranked by expected recovery = amount &times; P(recovery). Click a row to open its
-        agent trace.
+        {historical ? "September 2005 · Bill balances in TWD, with illustrative USD equivalents. No recovery predictions or actions are available. Click an account for details."
+          : "Ranked by expected recovery = amount × P(recovery). Click a row to open its agent trace."}
       </div>
 
       <div className="controls">
@@ -104,7 +109,7 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
           <select id="q-status" className={status ? "on" : ""} value={status}
                   onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
-            {STATUSES.map((s) => <option key={s} value={s}>{titleize(s)}</option>)}
+            {(historical ? ["historical"] : STATUSES).map((s) => <option key={s} value={s}>{titleize(s)}</option>)}
           </select>
         </div>
         <div className="field">
@@ -135,6 +140,11 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
       </div>
 
       <div className={`scroll${busy ? " busy" : ""}`} ref={tableRef}>
+        <div className="toolbar">
+          <button disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))}>Previous page</button>
+          <span> Page {Math.floor(offset / 200) + 1} · Search applies to this page </span>
+          <button disabled={busy || rows.length < 200} onClick={() => setOffset(offset + 200)}>Next page</button>
+        </div>
         <table>
           <thead>
             <tr>
@@ -146,7 +156,7 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
                     title={c.sortable ? `Sort by ${c.label}` : undefined}
                     aria-sort={sort === c.key ? (dir === "asc" ? "ascending" : "descending")
                                               : "none"}>
-                  {c.label}
+                  {historical && c.key === "failure_code" ? "Months overdue" : c.label}
                 </th>
               ))}
             </tr>
@@ -162,7 +172,7 @@ export function Queue({ onSelect, selected, metrics, preset, onRows }) {
                 <td>
                   <button className="linky" title={`Show only ${titleize(r.failure_code)}`}
                           onClick={(e) => { e.stopPropagation(); setCode(r.failure_code); }}>
-                    {titleize(r.failure_code)}
+                    {historical ? `${r.months_late} month(s)` : titleize(r.failure_code)}
                   </button>
                 </td>
                 <td className="num">{fmtPct(r.recovery_probability)}</td>
