@@ -30,10 +30,13 @@ COPY config/ ./config/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 RUN pip install -e .
 
+# This image explicitly bundles simulated demo results in local SQLite.
+# Enable that storage at build time and when the dashboard reads it at runtime.
+ENV RECOVERAI_ALLOW_SQLITE=1
 RUN python scripts/generate_dataset.py \
     && python ml/train.py \
     && python ml/evaluate.py \
-    && python scripts/run_experiment.py --fresh
+    && python scripts/run_experiment.py --fresh --planner rules
 
 # Run as a non-root user. The application writes only to /app/data, which the volume
 # mount owns, so nothing needs write access to the code.
