@@ -30,6 +30,11 @@ COPY config/ ./config/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 RUN pip install -e .
 
+RUN python scripts/generate_dataset.py \
+    && python ml/train.py \
+    && python ml/evaluate.py \
+    && python scripts/run_experiment.py --fresh
+
 # Run as a non-root user. The application writes only to /app/data, which the volume
 # mount owns, so nothing needs write access to the code.
 RUN useradd --create-home --uid 10001 recoverai \
